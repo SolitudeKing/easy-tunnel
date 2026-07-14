@@ -7,6 +7,7 @@ Versioning](https://semver.org/).
 
 ### Added
 
+- Windows manual packaging script that produces Python distributions, a desktop application, installer, and SHA-256 checksum.
 - Automatic stable-release checks and SHA-256-verified Windows installer updates.
 - Windows installer build and publication in the release workflow.
 

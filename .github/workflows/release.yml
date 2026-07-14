@@ -44,36 +44,11 @@ jobs:
       - name: Run tests
         run: python -m pytest -q
 
-      - name: Build distribution packages
-        run: python -m build --outdir release/python
-
-      - name: Build Windows application
-        run: |
-          $version = python -c "from easytunnel import __version__; print(__version__)"
-          flet build windows --output release/windows --build-version $version `
-            --project EasyTunnel --product EasyTunnel --company SolitudeKing `
-            --copyright "Copyright © 2026 SolitudeKing" `
-            --exclude .git .github .pytest_cache .venv build dist docs installer release storage tests
-
       - name: Install Inno Setup
         run: choco install innosetup --no-progress --yes
 
-      - name: Build Windows installer
-        run: |
-          $env:EASYTUNNEL_VERSION = python -c "from easytunnel import __version__; print(__version__)"
-          $env:EASYTUNNEL_SOURCE_DIR = (Resolve-Path "release/windows").Path
-          $env:EASYTUNNEL_OUTPUT_DIR = Join-Path $PWD "release/installer"
-          New-Item -ItemType Directory -Force -Path $env:EASYTUNNEL_OUTPUT_DIR | Out-Null
-          $iscc = (Get-Command iscc.exe -ErrorAction SilentlyContinue).Source
-          if (-not $iscc) {
-            $innoRoot = ${env:ProgramFiles(x86)}
-            $iscc = Get-ChildItem -Path "$innoRoot\Inno Setup *\ISCC.exe" `
-              -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
-          }
-          if (-not $iscc) {
-            throw "Inno Setup compiler was not found after installation"
-          }
-          & $iscc "installer/EasyTunnel.iss"
+      - name: Build release artifacts
+        run: powershell -ExecutionPolicy Bypass -File scripts/package_windows.ps1 -OutputDir release -SkipTests
 
       - name: Create GitHub Release
         env:
