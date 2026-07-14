@@ -52,7 +52,11 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Push-Location $repoRoot
 
 try {
-    $version = (& python -c "from easytunnel import __version__; print(__version__)").Trim()
+    if (-not (Get-Command "uv" -ErrorAction SilentlyContinue)) {
+        throw "uv was not found. Install it from https://docs.astral.sh/uv/ first."
+    }
+
+    $version = (& uv run python -c "from easytunnel import __version__; print(__version__)").Trim()
     if ($LASTEXITCODE -ne 0 -or -not $version) {
         throw "Unable to read easytunnel.__version__."
     }
@@ -79,17 +83,19 @@ try {
     New-Item -ItemType Directory -Force -Path $pythonOutputDir, $windowsOutputDir, $installerOutputDir | Out-Null
 
     if (-not $SkipTests) {
-        Invoke-CheckedCommand -Name "Tests" -FilePath "python" -Arguments @("-m", "pytest", "-q")
+        Invoke-CheckedCommand -Name "Tests" -FilePath "uv" -Arguments @("run", "pytest", "-q")
     }
 
     Invoke-CheckedCommand `
         -Name "Python distribution build" `
-        -FilePath "python" `
-        -Arguments @("-m", "build", "--outdir", $pythonOutputDir)
+        -FilePath "uv" `
+        -Arguments @("build", "--out-dir", $pythonOutputDir)
 
     $env:FLET_CLI_NO_RICH_OUTPUT = "1"
     $env:PYTHONUTF8 = "1"
     $fletArguments = @(
+        "run",
+        "flet",
         "build",
         "windows",
         "--output", $windowsOutputDir,
@@ -100,7 +106,7 @@ try {
         "--copyright", "Copyright (c) 2026 SolitudeKing",
         "--exclude", ".git", ".github", ".pytest_cache", ".venv", "build", "dist", "docs", "installer", "release", "storage", "tests"
     )
-    Invoke-CheckedCommand -Name "Windows application build" -FilePath "flet" -Arguments $fletArguments
+    Invoke-CheckedCommand -Name "Windows application build" -FilePath "uv" -Arguments $fletArguments
 
     $applicationPath = Join-Path $windowsOutputDir "EasyTunnel.exe"
     if (-not (Test-Path -LiteralPath $applicationPath -PathType Leaf)) {

@@ -11,6 +11,10 @@ Versioning](https://semver.org/).
 - Automatic stable-release checks and SHA-256-verified Windows installer updates.
 - Windows installer build and publication in the release workflow.
 
+### Changed
+
+- Use uv to manage the project virtual environment and locked dependencies.
+
 ## [0.1.0] - Initial development baseline
 
 ### Added

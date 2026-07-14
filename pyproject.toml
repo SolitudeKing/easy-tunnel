@@ -13,7 +13,7 @@ dependencies = ["flet[all]==0.28.3", "packaging>=24"]
 [project.scripts]
 easytunnel = "easytunnel.__main__:run"
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = ["pytest>=8.0"]
 
 [tool.pytest.ini_options]

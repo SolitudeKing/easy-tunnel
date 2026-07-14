@@ -23,7 +23,7 @@ must be `v0.2.0rc1`.
 
 1. Update `__version__` and move the relevant entries from `Unreleased` into a
    dated version section in `CHANGELOG.md`.
-2. Run the full test suite locally: `python -m pytest -q`.
+2. Run the full test suite locally: `uv run pytest -q`.
 3. Commit and push the release preparation to `master`.
 4. Create and push an annotated tag whose name exactly matches the version:
 

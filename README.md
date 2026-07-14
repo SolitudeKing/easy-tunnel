@@ -25,15 +25,15 @@ ssh -i .\pi-server -L 13389:192.168.3.88:3389 pi@pi.solitude.love -N
 
 ## 运行
 
-环境要求：Python 3.10+、系统 OpenSSH Client。
+环境要求：`uv`、系统 OpenSSH Client。`uv` 会创建项目 `.venv`，并自动选择或下载兼容的 Python 3.10+。
 
 ```powershell
 cd E:\XM\EasyTunnel
-python -m pip install -r requirements.txt
-python main.py
+uv sync
+uv run python main.py
 ```
 
-Windows 也可以直接双击 `start.bat`；若缺少依赖，它会先安装依赖再启动。
+Windows 也可以直接双击 `start.bat`；它会使用 `uv` 自动创建并同步项目的 `.venv` 后启动。请先按 [uv 安装说明](https://docs.astral.sh/uv/getting-started/installation/) 安装 `uv`。
 
 ## 使用方法
 
@@ -69,8 +69,7 @@ ssh-add E:\XM\pi-server
 ## 测试
 
 ```powershell
-python -m pip install "pytest>=8.0"
-python -m pytest -q
+uv run pytest -q
 ```
 
 测试不连接真实 SSH 服务器，覆盖配置校验、持久化、IPv6 转发格式、安全命令构造和错误状态。
@@ -96,8 +95,8 @@ EasyTunnel/
 │  ├─ config_store.py            # JSON 配置持久化
 │  └─ ssh_manager.py             # OpenSSH 进程生命周期
 ├─ tests/                        # 核心层自动化测试
-├─ requirements.txt
-└─ pyproject.toml
+├─ pyproject.toml
+└─ uv.lock                       # 受版本控制的依赖锁定文件
 ```
 
 关闭 EasyTunnel 时会停止由本次应用启动的 SSH 子进程。若应用被强制结束，操作系统仍可能留下孤立的 `ssh.exe`，此时可在任务管理器中确认命令行后手动结束。

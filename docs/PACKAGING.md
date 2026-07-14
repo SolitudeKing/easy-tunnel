@@ -5,7 +5,7 @@
 ## 前置条件
 
 - Windows 10/11。
-- Python 3.10 及以上，并已在项目根目录安装开发和构建依赖：`pip install -e ".[dev]" build`。
+- [uv](https://docs.astral.sh/uv/getting-started/installation/)；它会创建项目的 `.venv`，并自动选择或下载兼容的 Python 3.10 及以上版本。
 - Inno Setup 6：可通过 `choco install innosetup --yes` 安装。
 - Visual Studio 的“使用 C++ 的桌面开发”工作负载。Flet 首次打包还可能下载 Flutter 及其所需工具链，因此需要网络连接和足够磁盘空间。
 
@@ -14,6 +14,7 @@
 在项目根目录打开 PowerShell 后执行：
 
 ```powershell
+uv sync
 powershell -ExecutionPolicy Bypass -File .\scripts\package_windows.ps1
 ```
 
