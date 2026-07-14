@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "easy-tunnel"
-version = "0.1.0"
 description = "A graphical OpenSSH local-forward manager built with Flet"
 readme = "README.md"
 requires-python = ">=3.10"
+dynamic = ["version"]
 dependencies = ["flet[all]==0.28.3"]
 
 [project.scripts]
@@ -22,3 +22,6 @@ pythonpath = ["."]
 
 [tool.setuptools.packages.find]
 include = ["easytunnel*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "easytunnel.__version__"}

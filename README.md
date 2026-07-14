@@ -75,6 +75,10 @@ python -m pytest -q
 
 测试不连接真实 SSH 服务器，覆盖配置校验、持久化、IPv6 转发格式、安全命令构造和错误状态。
 
+## 版本与发布
+
+应用版本以 `easytunnel.__version__` 为唯一来源。推送与版本匹配的 `v*` Git 标签会触发 GitHub Actions：校验版本、运行测试、构建 wheel/源码包，并创建 GitHub Release。详细的版本号规则与发布步骤见[版本与发布指南](docs/VERSIONING.md)。
+
 ## 项目结构
 
 下一阶段的功能规划、详细规格、架构演进和发布指南统一放在 [docs/](docs/README.md)。

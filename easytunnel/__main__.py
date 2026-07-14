@@ -1,9 +1,28 @@
-import flet as ft
+"""Command-line entry point for EasyTunnel."""
 
-from .app import main
+import argparse
+
+from . import __version__
 
 
-def run() -> None:
+def run(argv: list[str] | None = None) -> None:
+    """Run the EasyTunnel desktop application.
+
+    Args:
+        argv: Optional command-line arguments used instead of ``sys.argv``.
+    """
+    parser = argparse.ArgumentParser(prog="easytunnel")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+    )
+    parser.parse_args(argv)
+
+    import flet as ft
+
+    from .app import main
+
     ft.app(target=main)
 
 

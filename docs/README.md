@@ -10,6 +10,7 @@
 | [下一阶段功能规格](NEXT_ITERATION_SPECS.md) | 第一阶段功能如何交互、需要哪些数据、测试哪些边界 | 开发、测试、UI |
 | [架构演进方案](ARCHITECTURE.md) | 如何拆分当前代码并支撑重连、多种转发和后台运行 | 开发、架构维护者 |
 | [安全、测试与发布指南](SECURITY_TESTING_RELEASE.md) | 如何保证安全性、稳定性并交付 Windows 安装包 | 开发、测试、发布负责人 |
+| [版本与发布指南](VERSIONING.md) | 如何更新版本、创建标签并触发 GitHub Release | 开发、发布负责人 |
 
 ## 优先级约定
 
