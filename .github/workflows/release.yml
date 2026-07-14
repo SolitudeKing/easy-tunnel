@@ -11,7 +11,11 @@ permissions:
 jobs:
   release:
     name: Build and publish
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
+
+    env:
+      FLET_CLI_NO_RICH_OUTPUT: "1"
+      PYTHONUTF8: "1"
 
     steps:
       - name: Check out source
@@ -23,26 +27,62 @@ jobs:
           python-version: "3.12"
 
       - name: Install build and test dependencies
-        run: python -m pip install ".[dev]" build
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[dev]" build
 
       - name: Verify the release tag matches the package version
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          python -c "from easytunnel import __version__; from os import environ; expected = f'v{__version__}'; actual = environ['RELEASE_TAG']; assert actual == expected, f'Release tag {actual!r} must match {expected!r}'"
+          $version = python -c "from easytunnel import __version__; print(__version__)"
+          $expected = "v$version"
+          if ($env:RELEASE_TAG -ne $expected) {
+            throw "Release tag '$env:RELEASE_TAG' must match '$expected'"
+          }
 
       - name: Run tests
         run: python -m pytest -q
 
       - name: Build distribution packages
-        run: python -m build
+        run: python -m build --outdir release/python
+
+      - name: Build Windows application
+        run: |
+          $version = python -c "from easytunnel import __version__; print(__version__)"
+          flet build windows --output release/windows --build-version $version `
+            --project EasyTunnel --product EasyTunnel --company SolitudeKing `
+            --copyright "Copyright © 2026 SolitudeKing" `
+            --exclude .git .github .pytest_cache .venv build dist docs installer release storage tests
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress --yes
+
+      - name: Build Windows installer
+        run: |
+          $env:EASYTUNNEL_VERSION = python -c "from easytunnel import __version__; print(__version__)"
+          $env:EASYTUNNEL_SOURCE_DIR = (Resolve-Path "release/windows").Path
+          $env:EASYTUNNEL_OUTPUT_DIR = Join-Path $PWD "release/installer"
+          New-Item -ItemType Directory -Force -Path $env:EASYTUNNEL_OUTPUT_DIR | Out-Null
+          $iscc = (Get-Command iscc.exe -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) {
+            $innoRoot = ${env:ProgramFiles(x86)}
+            $iscc = Get-ChildItem -Path "$innoRoot\Inno Setup *\ISCC.exe" `
+              -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $iscc) {
+            throw "Inno Setup compiler was not found after installation"
+          }
+          & $iscc "installer/EasyTunnel.iss"
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          release_flags=()
-          if [[ "$GITHUB_REF_NAME" =~ (a|b|rc|\.dev)[0-9]+$ ]]; then
-            release_flags+=(--prerelease)
-          fi
-          gh release create "$GITHUB_REF_NAME" dist/* --generate-notes --title "EasyTunnel $GITHUB_REF_NAME" "${release_flags[@]}"
+          $releaseFlags = @()
+          if ($env:GITHUB_REF_NAME -match "(a|b|rc|\.dev)\d+$") {
+            $releaseFlags += "--prerelease"
+          }
+          $assets = Get-ChildItem -Path "release/python", "release/installer" -File |
+            ForEach-Object { $_.FullName }
+          gh release create $env:GITHUB_REF_NAME $assets --generate-notes --title "EasyTunnel $env:GITHUB_REF_NAME" @releaseFlags

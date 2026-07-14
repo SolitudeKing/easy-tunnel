@@ -77,7 +77,9 @@ python -m pytest -q
 
 ## 版本与发布
 
-应用版本以 `easytunnel.__version__` 为唯一来源。推送与版本匹配的 `v*` Git 标签会触发 GitHub Actions：校验版本、运行测试、构建 wheel/源码包，并创建 GitHub Release。详细的版本号规则与发布步骤见[版本与发布指南](docs/VERSIONING.md)。
+应用版本以 `easytunnel.__version__` 为唯一来源。推送与版本匹配的 `v*` Git 标签会触发 GitHub Actions：校验版本、运行测试、构建 wheel/源码包和 Windows 安装程序，并创建 GitHub Release。
+
+Windows 安装版会在启动时后台检查最新稳定版本。发现更新后，用户确认下载，程序会校验 GitHub Release 提供的 SHA-256 摘要，再启动安装程序；源码运行模式不会自动改动本地文件。详细的版本号规则与发布步骤见[版本与发布指南](docs/VERSIONING.md)。
 
 ## 项目结构
 

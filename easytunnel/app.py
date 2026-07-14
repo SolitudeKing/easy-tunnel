@@ -10,9 +10,19 @@ from pathlib import Path
 
 import flet as ft
 
+from . import __version__
 from .config_store import ConfigError, ConfigStore
 from .models import RuntimeSnapshot, TunnelConfig, TunnelState
 from .ssh_manager import SSHManager
+from .updater import (
+    UpdateError,
+    UpdateInfo,
+    default_update_directory,
+    download_installer,
+    fetch_latest_update,
+    is_packaged_windows_app,
+    launch_installer,
+)
 
 
 BG = "#F4F7FB"
@@ -71,6 +81,9 @@ class EasyTunnelApp:
         self._toggle_lock = threading.Lock()
         self._toggle_targets: dict[str, bool] = {}
         self._toggle_workers: set[str] = set()
+        self._available_update: UpdateInfo | None = None
+        self._checking_update = False
+        self._update_status = ""
 
     def mount(self) -> None:
         page = self.page
@@ -92,6 +105,8 @@ class EasyTunnelApp:
         self._render()
         self._last_fingerprint = self._runtime_fingerprint()
         page.run_task(self._refresh_loop)
+        if is_packaged_windows_app():
+            page.run_task(self._check_for_update)
 
         if self.load_error:
             self._toast(self.load_error, error=True)
@@ -584,6 +599,7 @@ class EasyTunnelApp:
 
     def _settings_view(self) -> ft.Control:
         ssh_path = self.manager.ssh_executable or "未找到"
+        update_message = self._update_status or self._default_update_message()
         return ft.Container(
             padding=ft.padding.only(left=30, top=25, right=30, bottom=30),
             content=ft.Column(
@@ -612,6 +628,25 @@ class EasyTunnelApp:
                             ft.Text("• 仅保存私钥路径，不保存私钥内容、密码或口令。", color=MUTED, size=12),
                             ft.Text("• 首次连接默认接受新主机密钥；已有密钥变化时仍会拒绝连接。", color=MUTED, size=12),
                             ft.Text("• 加密私钥请预先加入 ssh-agent，本工具不会弹出密码输入框。", color=MUTED, size=12),
+                        ],
+                    ),
+                    self._settings_card(
+                        "软件更新",
+                        ft.Icons.SYSTEM_UPDATE_ALT_ROUNDED,
+                        [
+                            self._setting_row("当前版本", __version__, True),
+                            ft.Row(
+                                [
+                                    ft.OutlinedButton(
+                                        "立即检查",
+                                        icon=ft.Icons.REFRESH_ROUNDED,
+                                        disabled=self._checking_update,
+                                        on_click=lambda _: self._request_update_check(),
+                                    ),
+                                    ft.Text(update_message, color=MUTED, size=12, expand=True),
+                                ],
+                                spacing=12,
+                            ),
                         ],
                     ),
                     self._settings_card(
@@ -1021,6 +1056,104 @@ class EasyTunnelApp:
                 behavior=ft.SnackBarBehavior.FLOATING,
             )
         )
+
+    def _default_update_message(self) -> str:
+        if is_packaged_windows_app():
+            return "启动时会自动检查 GitHub Release，也可手动检查。"
+        return "自动安装仅适用于 Windows 安装版；当前为源码运行模式。"
+
+    def _request_update_check(self) -> None:
+        if self._checking_update:
+            return
+        self.page.run_task(self._check_for_update, True)
+
+    async def _check_for_update(self, manual: bool = False) -> None:
+        if self._checking_update:
+            return
+        if not is_packaged_windows_app():
+            self._update_status = "自动安装仅适用于 Windows 安装版。"
+            if self.current_view == "settings":
+                self._render()
+            if manual:
+                self._toast(self._update_status)
+            return
+
+        self._checking_update = True
+        self._update_status = "正在检查更新…"
+        if self.current_view == "settings":
+            self._render()
+        try:
+            update = await asyncio.to_thread(fetch_latest_update, __version__)
+        except UpdateError as exc:
+            self._update_status = f"检查更新失败：{exc}"
+            if manual:
+                self._toast(self._update_status, error=True)
+            if self.current_view == "settings":
+                self._render()
+            return
+        finally:
+            self._checking_update = False
+
+        if update is None:
+            self._available_update = None
+            self._update_status = "当前已是最新稳定版本。"
+            if manual:
+                self._toast(self._update_status)
+        else:
+            self._available_update = update
+            self._update_status = f"发现新版本 {update.version}。"
+            self._show_update_dialog(update)
+        if self.current_view == "settings":
+            self._render()
+
+    def _show_update_dialog(self, update: UpdateInfo) -> None:
+        notes = update.release_notes.strip() or "此版本暂无发布说明。"
+        if len(notes) > 360:
+            notes = f"{notes[:360].rstrip()}…"
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text(f"发现 EasyTunnel {update.version}"),
+            content=ft.Column(
+                [
+                    ft.Text("安装包下载完成并通过 SHA-256 校验后，将启动更新程序。"),
+                    ft.Text(notes, color=MUTED, size=12, selectable=True),
+                ],
+                tight=True,
+                spacing=12,
+            ),
+            actions=[
+                ft.TextButton("稍后更新", on_click=lambda _: self.page.close(dialog)),
+                ft.ElevatedButton(
+                    "下载并安装",
+                    icon=ft.Icons.SYSTEM_UPDATE_ALT_ROUNDED,
+                    bgcolor=PRIMARY,
+                    color="white",
+                    on_click=lambda _: self._start_update_install(dialog, update),
+                ),
+            ],
+        )
+        self.page.open(dialog)
+
+    def _start_update_install(self, dialog: ft.AlertDialog, update: UpdateInfo) -> None:
+        self.page.close(dialog)
+        self.page.run_task(self._download_and_launch_update, update)
+
+    async def _download_and_launch_update(self, update: UpdateInfo) -> None:
+        self._toast(f"正在下载 EasyTunnel {update.version} 更新包…")
+        try:
+            installer = await asyncio.to_thread(
+                download_installer,
+                update,
+                default_update_directory(),
+            )
+            await asyncio.to_thread(launch_installer, installer)
+        except UpdateError as exc:
+            self._toast(str(exc), error=True)
+            return
+
+        self.manager.shutdown()
+        self._toast("更新程序已启动，应用即将关闭。")
+        self.page.window.close()
 
     async def _refresh_loop(self) -> None:
         while True:

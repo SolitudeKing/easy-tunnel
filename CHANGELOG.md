@@ -5,6 +5,11 @@ Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Automatic stable-release checks and SHA-256-verified Windows installer updates.
+- Windows installer build and publication in the release workflow.
+
 ## [0.1.0] - Initial development baseline
 
 ### Added

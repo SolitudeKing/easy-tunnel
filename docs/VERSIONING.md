@@ -33,11 +33,13 @@ must be `v0.2.0rc1`.
    ```
 
 The `Publish release` workflow validates that the tag equals
-`v{easytunnel.__version__}`, runs the tests, builds a wheel and source archive,
-and creates a GitHub Release with auto-generated notes. `a`, `b`, `rc`, and
-`.dev` versions are marked as pre-releases. A mismatched tag stops before any
-release is created.
+`v{easytunnel.__version__}`, runs the tests, builds a wheel, source archive,
+and Windows installer, then creates a GitHub Release with auto-generated notes.
+The installer asset is named `EasyTunnel-Setup-<version>.exe`; the application
+uses GitHub's SHA-256 asset digest to verify it before launching the installer.
+`a`, `b`, `rc`, and `.dev` versions are marked as pre-releases. A mismatched
+tag stops before any release is created.
 
-The current workflow publishes Python distribution packages only. Attach a
-Windows installer after a reproducible Flet or installer build has been added
-to the workflow.
+Automatic installation is available only to the Flet-built Windows application.
+When started from Python source, EasyTunnel never changes the working tree; use
+the Windows installer from the release page instead.
