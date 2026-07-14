@@ -14,6 +14,7 @@ Versioning](https://semver.org/).
 ### Changed
 
 - Use uv to manage the project virtual environment and locked dependencies.
+- Detect Inno Setup installations in both system and current-user locations when creating Windows installers.
 
 ## [0.1.0] - Initial development baseline
 

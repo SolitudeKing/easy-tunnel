@@ -6,7 +6,16 @@
 
 - Windows 10/11。
 - [uv](https://docs.astral.sh/uv/getting-started/installation/)；它会创建项目的 `.venv`，并自动选择或下载兼容的 Python 3.10 及以上版本。
-- Inno Setup 6：可通过 `choco install innosetup --yes` 安装。
+- Inno Setup 6：可任选一种方式安装；脚本支持系统范围、当前用户范围和 Scoop 的默认安装位置。
+
+  ```powershell
+  winget install --id JRSoftware.InnoSetup --exact
+  # 或者（首次使用 Scoop 时需先添加 extras bucket）
+  scoop bucket add extras
+  scoop install inno-setup
+  # 或者
+  choco install innosetup --yes
+  ```
 - Visual Studio 的“使用 C++ 的桌面开发”工作负载。Flet 首次打包还可能下载 Flutter 及其所需工具链，因此需要网络连接和足够磁盘空间。
 
 ## 执行打包

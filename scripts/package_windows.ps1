@@ -31,12 +31,19 @@ function Find-InnoSetupCompiler {
 
     $programFilesRoots = @(
         ${env:ProgramFiles(x86)},
-        $env:ProgramFiles
+        $env:ProgramFiles,
+        $env:LOCALAPPDATA
     ) | Where-Object { $_ }
 
     foreach ($programFilesRoot in $programFilesRoots) {
+        $innoSetupPath = if ($programFilesRoot -eq $env:LOCALAPPDATA) {
+            Join-Path $programFilesRoot "Programs\Inno Setup *\ISCC.exe"
+        }
+        else {
+            Join-Path $programFilesRoot "Inno Setup *\ISCC.exe"
+        }
         $compiler = Get-ChildItem `
-            -Path (Join-Path $programFilesRoot "Inno Setup *\ISCC.exe") `
+            -Path $innoSetupPath `
             -ErrorAction SilentlyContinue |
             Select-Object -First 1 -ExpandProperty FullName
 
@@ -45,7 +52,21 @@ function Find-InnoSetupCompiler {
         }
     }
 
-    throw "Inno Setup compiler was not found. Install Inno Setup 6, or run: choco install innosetup --yes"
+    $scoopRoots = @(
+        $env:SCOOP,
+        (Join-Path $HOME "scoop"),
+        $env:SCOOP_GLOBAL,
+        (Join-Path $env:ProgramData "scoop")
+    ) | Where-Object { $_ } | Select-Object -Unique
+
+    foreach ($scoopRoot in $scoopRoots) {
+        $compiler = Join-Path $scoopRoot "apps\inno-setup\current\ISCC.exe"
+        if (Test-Path -LiteralPath $compiler -PathType Leaf) {
+            return $compiler
+        }
+    }
+
+    throw "Inno Setup compiler was not found. Install Inno Setup 6 with winget, Scoop, or Chocolatey; see docs/PACKAGING.md."
 }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
