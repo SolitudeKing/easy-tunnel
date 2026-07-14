@@ -95,7 +95,13 @@ try {
 
     $outputPath = [IO.Path]::GetFullPath($outputPath)
     if (Test-Path -LiteralPath $outputPath) {
-        throw "Output directory already exists: $outputPath. Use a new -OutputDir or remove it manually."
+        $recommendedOutputDir = Join-Path "release\manual" "$version-rebuild"
+        Write-Host "Packaging stopped: the output directory already exists." -ForegroundColor Yellow
+        Write-Host "  Existing output: $outputPath"
+        Write-Host "  To keep it, run again with:"
+        Write-Host "    .\scripts\package_windows.ps1 -OutputDir $recommendedOutputDir"
+        Write-Host "  Or remove the existing directory manually after saving the artifacts you need."
+        throw "Output directory already exists."
     }
 
     $pythonOutputDir = Join-Path $outputPath "python"
