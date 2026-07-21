@@ -5,6 +5,11 @@ Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Structured forwarding input groups that can be added and removed dynamically.
+- A custom EasyTunnel application icon for the Windows app and installer.
+
 ## [0.1.2] - 2026-07-21
 
 ### Fixed

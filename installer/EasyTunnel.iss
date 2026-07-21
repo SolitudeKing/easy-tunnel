@@ -25,6 +25,7 @@ AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\EasyTunnel
 DefaultGroupName={#MyAppName}
 UninstallDisplayIcon={app}\{#MyAppExeName}
+SetupIconFile=EasyTunnel.ico
 OutputDir={#MyOutputDir}
 OutputBaseFilename=EasyTunnel-Setup-{#MyAppVersion}
 Compression=lzma2

@@ -8,7 +8,7 @@ from packaging.version import Version
 
 import easytunnel.app as app_module
 from easytunnel.app import EasyTunnelApp
-from easytunnel.models import LocalForward
+from easytunnel.models import LocalForward, TunnelConfig
 from easytunnel.updater import UpdateError, UpdateInfo
 
 
@@ -51,6 +51,53 @@ class _FakePage:
         self.clipboard = value
 
 
+def _multi_forward_config(tmp_path: Path) -> TunnelConfig:
+    key = tmp_path / "id_ed25519"
+    key.write_text("fake", encoding="utf-8")
+    return TunnelConfig(
+        id="tunnel-fixed-id",
+        name="开发环境",
+        note="多服务转发",
+        ssh_host="pi.solitude.love",
+        username="pi",
+        ssh_port=2222,
+        identity_file=str(key.resolve()),
+        forwards=(
+            LocalForward(
+                id="forward-rdp",
+                name="远程桌面",
+                service_type="rdp",
+                bind_host="127.0.0.1",
+                local_port=13389,
+                remote_host="192.168.3.88",
+                remote_port=3389,
+            ),
+            LocalForward(
+                id="forward-redis",
+                name="Redis",
+                service_type="tcp",
+                bind_host="::1",
+                local_port=16380,
+                remote_host="::1",
+                remote_port=6380,
+            ),
+            LocalForward(
+                id="forward-mysql",
+                name="MySQL",
+                service_type="tcp",
+                bind_host="127.0.0.1",
+                local_port=13306,
+                remote_host="127.0.0.1",
+                remote_port=3369,
+            ),
+        ),
+        strict_host_key=True,
+        auto_connect=True,
+        connect_timeout=17,
+        keepalive_interval=41,
+    )
+
+
 def test_all_primary_views_construct_with_pinned_flet(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -67,6 +114,113 @@ def test_all_primary_views_construct_with_pinned_flet(
     app._open_form()
     assert page.opened
     assert isinstance(page.opened[-1], ft.AlertDialog)
+
+
+def test_edit_form_round_trips_multiple_forward_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EASYTUNNEL_CONFIG", str(tmp_path / "tunnels.json"))
+    config = _multi_forward_config(tmp_path)
+    page = _FakePage()
+    app = EasyTunnelApp(page)  # type: ignore[arg-type]
+
+    app._open_form(config)
+
+    assert app._form_config() == config
+    assert [row.title.value for row in app._form_forward_rows] == [
+        "主转发",
+        "附加转发 1",
+        "附加转发 2",
+    ]
+    assert [row.delete_button.visible for row in app._form_forward_rows] == [
+        False,
+        True,
+        True,
+    ]
+
+
+def test_dynamic_forward_rows_preserve_ids_and_preview_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EASYTUNNEL_CONFIG", str(tmp_path / "tunnels.json"))
+    config = _multi_forward_config(tmp_path)
+    page = _FakePage()
+    app = EasyTunnelApp(page)  # type: ignore[arg-type]
+    app.manager.ssh_executable = "ssh"
+    app._open_form(config)
+
+    app._remove_forward_form_row("forward-rdp")
+    assert [row.forward_id for row in app._form_forward_rows] == [
+        "forward-rdp",
+        "forward-redis",
+        "forward-mysql",
+    ]
+
+    app._remove_forward_form_row("forward-redis")
+    app._add_forward_form_row()
+    added = app._form_forward_rows[-1]
+    added.name.value = "MinIO 控制台"
+    added.service_type.value = "web"
+    added.bind_host.value = "127.0.0.1"
+    added.local_port.value = "19001"
+    added.remote_host.value = "127.0.0.1"
+    added.remote_port.value = "9001"
+
+    rebuilt = app._form_config()
+    rebuilt_ids = [forward.id for forward in rebuilt.forwards]
+    assert rebuilt_ids[:2] == ["forward-rdp", "forward-mysql"]
+    assert rebuilt.forwards[1] == config.forwards[2]
+    assert rebuilt_ids[2] not in {
+        "forward-rdp",
+        "forward-redis",
+        "forward-mysql",
+    }
+
+    app._update_preview(None)
+    preview_control = app._form["preview"]
+    assert isinstance(preview_control, ft.Text)
+    preview = str(preview_control.value)
+    specs = [forward.to_ssh_spec() for forward in rebuilt.forwards]
+    assert all(spec in preview for spec in specs)
+    assert [preview.index(spec) for spec in specs] == sorted(
+        preview.index(spec) for spec in specs
+    )
+
+    added.local_port.value = "not-a-port"
+    with pytest.raises(ValueError, match="第 3 条转发的本地端口"):
+        app._form_config()
+    app._update_preview(None)
+    assert preview_control.value == "请填写完整的连接参数后查看命令预览"
+
+
+def test_stale_form_generation_cannot_open_picker_for_reopened_form(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EASYTUNNEL_CONFIG", str(tmp_path / "tunnels.json"))
+    page = _FakePage()
+    app = EasyTunnelApp(page)  # type: ignore[arg-type]
+    app._open_form()
+    stale_generation = app._form_generation
+    app._open_form()
+    picker_calls: list[bool] = []
+    monkeypatch.setattr(
+        app.file_picker,
+        "pick_files",
+        lambda **_: picker_calls.append(True),
+    )
+
+    app._pick_key(None, generation=stale_generation)
+
+    assert picker_calls == []
+    assert app._file_picker_generation is None
+
+    app._pick_key(None, generation=app._form_generation)
+
+    assert picker_calls == [True]
+    assert app._file_picker_generation == app._form_generation
 
 
 def test_import_dialog_converts_variables_and_multiple_forwards(
@@ -99,6 +253,9 @@ ssh -i $PrivateKey -o IdentitiesOnly=yes -o ExitOnForwardFailure=yes
     assert imported.keepalive_interval == 30
     assert [forward.name for forward in imported.forwards] == ["MySQL", "Redis"]
     assert [forward.local_port for forward in imported.forwards] == [13306, 16380]
+    assert [forward.service_type for forward in imported.forwards] == ["tcp", "tcp"]
+    assert [forward.remote_port for forward in imported.forwards] == [3369, 6380]
+    assert len(app._form_forward_rows) == 2
     assert app._editing_id is None
     assert len(page.closed) == 1
     assert isinstance(page.opened[-1], ft.AlertDialog)

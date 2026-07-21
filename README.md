@@ -11,7 +11,7 @@ ssh -i .\pi-server -o IdentitiesOnly=yes -o ExitOnForwardFailure=yes -o ServerAl
 ## 已实现功能
 
 - 隧道卡片：状态、多条转发端点、SSH 跳板机、启动时间和一键连接开关
-- 新建、编辑、删除和搜索隧道配置，一条 SSH 会话可保存多条 `-L`
+- 新建、编辑、删除和搜索隧道配置，通过动态输入框组管理一条 SSH 会话中的多条 `-L`
 - 安全导入 SSH 命令，支持显式 `NAME=value` 赋值与 `$NAME`、`${NAME}` 变量引用
 - RDP、Web、通用 TCP 三种服务类型
 - 私钥文件选择器与实时 SSH 命令预览

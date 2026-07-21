@@ -2,6 +2,8 @@
 
 项目提供统一的 Windows 打包脚本，产物结构与 GitHub Release 工作流保持一致。脚本会读取 `easytunnel.__version__` 作为版本号，运行测试、构建 Python 分发包、构建 Flet Windows 应用，并用 Inno Setup 生成安装程序。
 
+Flet 会自动使用 `assets/icon.png` 作为应用图标，Inno Setup 使用 `installer/EasyTunnel.ico` 作为安装器图标；两者均由 `assets/easytunnel-icon.svg` 中的同一设计导出。
+
 ## 前置条件
 
 - Windows 10/11。

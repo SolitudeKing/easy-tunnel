@@ -7,6 +7,7 @@ import os
 import subprocess
 import threading
 import webbrowser
+from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
@@ -42,6 +43,20 @@ GREEN_SOFT = "#EAFBF4"
 AMBER = "#E59A17"
 RED = "#E5484D"
 BORDER = "#E5EAF1"
+
+
+@dataclass(slots=True)
+class _ForwardFormRow:
+    forward_id: str
+    name: ft.TextField
+    service_type: ft.Dropdown
+    bind_host: ft.TextField
+    local_port: ft.TextField
+    remote_host: ft.TextField
+    remote_port: ft.TextField
+    title: ft.Text
+    delete_button: ft.IconButton
+    container: ft.Container
 
 
 def _app_data_path() -> Path:
@@ -86,7 +101,10 @@ class EasyTunnelApp:
         self._import_variables: ft.TextField | None = None
         self._import_error: ft.Text | None = None
         self._editing_id: str | None = None
-        self._form_forward_ids: list[str] = []
+        self._form_forward_rows: list[_ForwardFormRow] = []
+        self._form_forwards_column: ft.Column | None = None
+        self._form_generation = 0
+        self._file_picker_generation: int | None = None
         self.file_picker = ft.FilePicker(on_result=self._picked_key)
         self._toggle_lock = threading.Lock()
         self._toggle_targets: dict[str, bool] = {}
@@ -952,7 +970,167 @@ class EasyTunnelApp:
         path = Path(value).expanduser()
         return str(path if path.is_absolute() else path.absolute())
 
+    def _form_field(
+        self,
+        label: str,
+        value: object,
+        **kwargs: object,
+    ) -> ft.TextField:
+        return ft.TextField(
+            label=label,
+            value=str(value),
+            border_color=BORDER,
+            focused_border_color=PRIMARY,
+            border_radius=10,
+            text_size=13,
+            label_style=ft.TextStyle(color=MUTED),
+            on_change=self._update_preview,
+            **kwargs,
+        )
+
+    def _build_forward_form_row(
+        self,
+        forward: LocalForward | None,
+        *,
+        generation: int,
+    ) -> _ForwardFormRow:
+        forward_id = forward.id if forward else uuid4().hex
+        name = self._form_field("服务名称 *", forward.name if forward else "")
+        service_type = ft.Dropdown(
+            label="服务类型",
+            value=forward.service_type if forward else "tcp",
+            options=[
+                ft.dropdown.Option("rdp", "远程桌面 (RDP)"),
+                ft.dropdown.Option("web", "Web 服务"),
+                ft.dropdown.Option("tcp", "通用 TCP"),
+            ],
+            border_color=BORDER,
+            focused_border_color=PRIMARY,
+            border_radius=10,
+            on_change=self._update_preview,
+        )
+        bind_host = self._form_field(
+            "本地绑定 *",
+            forward.bind_host if forward else "127.0.0.1",
+        )
+        local_port = self._form_field(
+            "本地端口 *",
+            forward.local_port if forward else "",
+            keyboard_type=ft.KeyboardType.NUMBER,
+        )
+        remote_host = self._form_field(
+            "目标主机 *",
+            forward.remote_host if forward else "127.0.0.1",
+            hint_text="192.168.3.88 或 127.0.0.1",
+        )
+        remote_port = self._form_field(
+            "目标端口 *",
+            forward.remote_port if forward else "",
+            keyboard_type=ft.KeyboardType.NUMBER,
+        )
+        name.expand = 2
+        service_type.expand = 1
+        bind_host.expand = 2
+        local_port.expand = 1
+        remote_host.expand = 2
+        remote_port.expand = 1
+
+        title = ft.Text("", color=TEXT, size=13, weight=ft.FontWeight.BOLD)
+        delete_button = ft.IconButton(
+            icon=ft.Icons.DELETE_OUTLINE_ROUNDED,
+            icon_color=RED,
+            tooltip="删除这条附加转发",
+            on_click=lambda _, row_id=forward_id, form_generation=generation: (
+                self._remove_forward_form_row(
+                    row_id,
+                    generation=form_generation,
+                )
+            ),
+        )
+        container = ft.Container(
+            bgcolor="#F8FAFC",
+            border=ft.border.all(1, BORDER),
+            border_radius=12,
+            padding=14,
+            content=ft.Column(
+                [
+                    ft.Row(
+                        [title, ft.Container(expand=True), delete_button],
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Row([name, service_type], spacing=10),
+                    ft.Row([bind_host, local_port], spacing=10),
+                    ft.Row([remote_host, remote_port], spacing=10),
+                ],
+                spacing=9,
+            ),
+        )
+        return _ForwardFormRow(
+            forward_id=forward_id,
+            name=name,
+            service_type=service_type,
+            bind_host=bind_host,
+            local_port=local_port,
+            remote_host=remote_host,
+            remote_port=remote_port,
+            title=title,
+            delete_button=delete_button,
+            container=container,
+        )
+
+    def _refresh_forward_form_rows(self) -> None:
+        for index, row in enumerate(self._form_forward_rows):
+            row.title.value = "主转发" if index == 0 else f"附加转发 {index}"
+            row.delete_button.visible = index > 0
+        if self._form_forwards_column is None:
+            return
+        self._form_forwards_column.controls = [
+            row.container for row in self._form_forward_rows
+        ]
+        if self._form_forwards_column.page:
+            self._form_forwards_column.update()
+
+    def _add_forward_form_row(
+        self,
+        _: object = None,
+        *,
+        generation: int | None = None,
+    ) -> None:
+        if generation is not None and generation != self._form_generation:
+            return
+        row = self._build_forward_form_row(
+            None,
+            generation=self._form_generation,
+        )
+        self._form_forward_rows.append(row)
+        self._refresh_forward_form_rows()
+        self._update_preview(None)
+
+    def _remove_forward_form_row(
+        self,
+        row_id: str,
+        *,
+        generation: int | None = None,
+    ) -> None:
+        if generation is not None and generation != self._form_generation:
+            return
+        index = next(
+            (
+                item_index
+                for item_index, row in enumerate(self._form_forward_rows)
+                if row.forward_id == row_id
+            ),
+            -1,
+        )
+        if index <= 0:
+            return
+        self._form_forward_rows.pop(index)
+        self._refresh_forward_form_rows()
+        self._update_preview(None)
+
     def _open_form(self, config: TunnelConfig | None = None, *, as_new: bool = False) -> None:
+        self._form_generation += 1
+        generation = self._form_generation
         self._editing_id = config.id if config and not as_new else None
         source = config or TunnelConfig(
             name="",
@@ -972,109 +1150,87 @@ class EasyTunnelApp:
                 ),
             ),
         )
-        primary_forward = source.forwards[0]
-        self._form_forward_ids = [forward.id for forward in source.forwards]
-
-        def field(label: str, value: object, **kwargs: object) -> ft.TextField:
-            return ft.TextField(
-                label=label,
-                value=str(value),
-                border_color=BORDER,
-                focused_border_color=PRIMARY,
-                border_radius=10,
-                text_size=13,
-                label_style=ft.TextStyle(color=MUTED),
-                on_change=self._update_preview,
-                **kwargs,
-            )
 
         self._form = {
-            "name": field("隧道名称 *", source.name),
-            "note": field("用途说明", source.note),
-            "service_type": ft.Dropdown(
-                label="服务类型",
-                value=primary_forward.service_type,
-                options=[
-                    ft.dropdown.Option("rdp", "远程桌面 (RDP)"),
-                    ft.dropdown.Option("web", "Web 服务"),
-                    ft.dropdown.Option("tcp", "通用 TCP"),
-                ],
-                border_color=BORDER,
-                focused_border_color=PRIMARY,
-                border_radius=10,
-                on_change=self._update_preview,
+            "name": self._form_field("隧道名称 *", source.name),
+            "note": self._form_field("用途说明", source.note),
+            "ssh_host": self._form_field(
+                "SSH 主机 *",
+                source.ssh_host,
+                hint_text="pi.solitude.love",
             ),
-            "ssh_host": field("SSH 主机 *", source.ssh_host, hint_text="pi.solitude.love"),
-            "username": field("用户名 *", source.username, hint_text="pi"),
-            "ssh_port": field("SSH 端口", source.ssh_port, width=135, keyboard_type=ft.KeyboardType.NUMBER),
-            "identity_file": field("私钥文件 *", source.identity_file, hint_text=r"E:\keys\id_ed25519"),
-            "forward_name": field("主服务名称 *", primary_forward.name),
-            "bind_host": field("本地绑定", primary_forward.bind_host, width=170),
-            "local_port": field(
-                "本地端口 *",
-                primary_forward.local_port,
-                width=160,
+            "username": self._form_field("用户名 *", source.username, hint_text="pi"),
+            "ssh_port": self._form_field(
+                "SSH 端口",
+                source.ssh_port,
+                width=135,
                 keyboard_type=ft.KeyboardType.NUMBER,
             ),
-            "remote_host": field(
-                "内网目标主机 *",
-                primary_forward.remote_host,
-                hint_text="192.168.3.88",
+            "identity_file": self._form_field(
+                "私钥文件 *",
+                source.identity_file,
+                hint_text=r"E:\keys\id_ed25519",
             ),
-            "remote_port": field(
-                "目标端口 *",
-                primary_forward.remote_port,
-                width=160,
-                keyboard_type=ft.KeyboardType.NUMBER,
-            ),
-            "additional_forwards": field(
-                "附加转发（名称 | 类型 | 本地地址:本地端口:目标地址:目标端口）",
-                "\n".join(
-                    f"{forward.name} | {forward.service_type} | {forward.to_ssh_spec()}"
-                    for forward in source.forwards[1:]
-                ),
-                hint_text=(
-                    "Redis | tcp | 127.0.0.1:16380:127.0.0.1:6380\n"
-                    "MinIO | web | 127.0.0.1:19001:127.0.0.1:9001"
-                ),
-                multiline=True,
-                min_lines=2,
-                max_lines=4,
-            ),
-            "connect_timeout": field(
+            "connect_timeout": self._form_field(
                 "连接超时（秒）",
                 source.connect_timeout,
                 width=170,
                 keyboard_type=ft.KeyboardType.NUMBER,
             ),
-            "keepalive_interval": field(
+            "keepalive_interval": self._form_field(
                 "保活间隔（秒）",
                 source.keepalive_interval,
                 width=170,
                 keyboard_type=ft.KeyboardType.NUMBER,
             ),
-            "strict_host_key": ft.Checkbox(label="严格校验主机密钥（主机必须已在 known_hosts 中）", value=source.strict_host_key),
-            "auto_connect": ft.Checkbox(label="应用启动后自动连接", value=source.auto_connect),
+            "strict_host_key": ft.Checkbox(
+                label="严格校验主机密钥（主机必须已在 known_hosts 中）",
+                value=source.strict_host_key,
+                on_change=self._update_preview,
+            ),
+            "auto_connect": ft.Checkbox(
+                label="应用启动后自动连接",
+                value=source.auto_connect,
+            ),
         }
         self._form["error"] = ft.Text("", color=RED, size=11)
-        self._form["preview"] = ft.Text("", color="#344054", size=11, font_family="Consolas", selectable=True)
+        self._form["preview"] = ft.Text(
+            "",
+            color="#344054",
+            size=11,
+            font_family="Consolas",
+            selectable=True,
+        )
         self._form["name"].expand = 2
-        self._form["service_type"].expand = 1
         self._form["ssh_host"].expand = 2
         self._form["username"].expand = 1
-        self._form["forward_name"].expand = True
-        self._form["remote_host"].expand = True
+        self._form_forward_rows = [
+            self._build_forward_form_row(forward, generation=generation)
+            for forward in source.forwards
+        ]
+        self._form_forwards_column = ft.Column(spacing=10)
+        self._refresh_forward_form_rows()
         key_row = ft.Row(
             [
                 self._form["identity_file"],
-                ft.OutlinedButton("浏览", icon=ft.Icons.FOLDER_OPEN_OUTLINED, height=48, on_click=self._pick_key),
+                ft.OutlinedButton(
+                    "浏览",
+                    icon=ft.Icons.FOLDER_OPEN_OUTLINED,
+                    height=48,
+                    on_click=lambda event, form_generation=generation: (
+                        self._pick_key(
+                            event,
+                            generation=form_generation,
+                        )
+                    ),
+                ),
             ],
             spacing=10,
         )
         self._form["identity_file"].expand = True
         content = ft.Container(
-            width=700,
-            height=480,
+            width=720,
+            height=510,
             content=ft.Column(
                 [
                     self._section_label("基本信息"),
@@ -1086,11 +1242,25 @@ class EasyTunnelApp:
                         spacing=10,
                     ),
                     key_row,
-                    self._section_label("本地端口转发"),
-                    ft.Row([self._form["forward_name"], self._form["service_type"]], spacing=10),
-                    ft.Row([self._form["bind_host"], self._form["local_port"]], spacing=10),
-                    ft.Row([self._form["remote_host"], self._form["remote_port"]], spacing=10),
-                    self._form["additional_forwards"],
+                    ft.Row(
+                        [
+                            self._section_label("本地端口转发"),
+                            ft.Container(expand=True),
+                            ft.OutlinedButton(
+                                "添加附加转发",
+                                icon=ft.Icons.ADD_LINK_ROUNDED,
+                                height=38,
+                                on_click=lambda event, form_generation=generation: (
+                                    self._add_forward_form_row(
+                                        event,
+                                        generation=form_generation,
+                                    )
+                                ),
+                            ),
+                        ],
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    self._form_forwards_column,
                     self._section_label("连接保护"),
                     ft.Row(
                         [self._form["connect_timeout"], self._form["keepalive_interval"]],
@@ -1126,13 +1296,23 @@ class EasyTunnelApp:
             ),
             content=content,
             actions=[
-                ft.TextButton("取消", on_click=lambda _: self._close_dialog()),
+                ft.TextButton(
+                    "取消",
+                    on_click=lambda _, form_generation=generation: (
+                        self._close_dialog(generation=form_generation)
+                    ),
+                ),
                 ft.ElevatedButton(
                     "保存隧道",
                     icon=ft.Icons.SAVE_OUTLINED,
                     bgcolor=PRIMARY,
                     color="white",
-                    on_click=self._save_form,
+                    on_click=lambda event, form_generation=generation: (
+                        self._save_form(
+                            event,
+                            generation=form_generation,
+                        )
+                    ),
                 ),
             ],
             actions_alignment=ft.MainAxisAlignment.END,
@@ -1153,19 +1333,45 @@ class EasyTunnelApp:
             except ValueError as exc:
                 raise ValueError(f"{label}必须填写为整数") from exc
 
+        def row_value(control: ft.Control) -> str:
+            return str(getattr(control, "value", "") or "").strip()
+
+        def row_integer(
+            control: ft.Control,
+            *,
+            row_number: int,
+            label: str,
+        ) -> int:
+            try:
+                return int(row_value(control))
+            except ValueError as exc:
+                raise ValueError(
+                    f"第 {row_number} 条转发的{label}必须填写为整数"
+                ) from exc
+
         identity_file = get("identity_file")
         if identity_file:
             identity_file = self._absolute_identity_path(identity_file)
-        primary = LocalForward(
-            id=self._form_forward_ids[0] if self._form_forward_ids else uuid4().hex,
-            name=get("forward_name"),
-            service_type=get("service_type"),
-            bind_host=get("bind_host"),
-            local_port=integer("local_port", "本地端口"),
-            remote_host=get("remote_host"),
-            remote_port=integer("remote_port", "目标端口"),
+        forwards = tuple(
+            LocalForward(
+                id=row.forward_id,
+                name=row_value(row.name),
+                service_type=row_value(row.service_type),
+                bind_host=row_value(row.bind_host),
+                local_port=row_integer(
+                    row.local_port,
+                    row_number=index,
+                    label="本地端口",
+                ),
+                remote_host=row_value(row.remote_host),
+                remote_port=row_integer(
+                    row.remote_port,
+                    row_number=index,
+                    label="目标端口",
+                ),
+            )
+            for index, row in enumerate(self._form_forward_rows, start=1)
         )
-        additional = self._parse_additional_forwards(get("additional_forwards"))
         return TunnelConfig(
             id=self._editing_id or uuid4().hex,
             name=get("name"),
@@ -1174,45 +1380,12 @@ class EasyTunnelApp:
             username=get("username"),
             ssh_port=integer("ssh_port", "SSH 端口"),
             identity_file=identity_file,
-            forwards=(primary, *additional),
+            forwards=forwards,
             strict_host_key=bool(getattr(self._form["strict_host_key"], "value", False)),
             auto_connect=bool(getattr(self._form["auto_connect"], "value", False)),
             connect_timeout=integer("connect_timeout", "连接超时"),
             keepalive_interval=integer("keepalive_interval", "保活间隔"),
         )
-
-    def _parse_additional_forwards(self, text: str) -> tuple[LocalForward, ...]:
-        forwards: list[LocalForward] = []
-        lines = [line.strip() for line in text.splitlines() if line.strip()]
-        for index, line in enumerate(lines, start=2):
-            parts = [part.strip() for part in line.split("|")]
-            if len(parts) == 1:
-                name, service_type, spec = f"转发 {index}", "tcp", parts[0]
-            elif len(parts) == 2:
-                name, service_type, spec = parts[0], "tcp", parts[1]
-            elif len(parts) == 3:
-                name, service_type, spec = parts
-            else:
-                raise ValueError(f"第 {index} 条转发格式无效")
-            if service_type not in {"rdp", "web", "tcp"}:
-                raise ValueError(f"第 {index} 条转发的类型必须是 rdp、web 或 tcp")
-            existing_index = index - 1
-            forward_id = (
-                self._form_forward_ids[existing_index]
-                if existing_index < len(self._form_forward_ids)
-                else None
-            )
-            try:
-                forward = LocalForward.from_spec(
-                    spec,
-                    name=name,
-                    service_type=service_type,
-                    forward_id=forward_id,
-                )
-            except ValueError as exc:
-                raise ValueError(f"第 {index} 条转发：{exc}") from exc
-            forwards.append(forward)
-        return tuple(forwards)
 
     def _update_preview(self, _: object) -> None:
         try:
@@ -1227,8 +1400,18 @@ class EasyTunnelApp:
             control.value = preview
             control.update() if control.page else None
 
-    def _pick_key(self, _: object) -> None:
+    def _pick_key(
+        self,
+        _: object,
+        *,
+        generation: int | None = None,
+    ) -> None:
+        if generation is not None and generation != self._form_generation:
+            return
         try:
+            self._file_picker_generation = (
+                generation if generation is not None else self._form_generation
+            )
             self.file_picker.pick_files(
                 dialog_title="选择 SSH 私钥",
                 allow_multiple=False,
@@ -1238,7 +1421,11 @@ class EasyTunnelApp:
 
     def _picked_key(self, event: object) -> None:
         files = getattr(event, "files", None)
-        if not files:
+        if (
+            not files
+            or self._file_picker_generation != self._form_generation
+            or self._form_dialog is None
+        ):
             return
         control = self._form.get("identity_file")
         if isinstance(control, ft.TextField):
@@ -1246,7 +1433,14 @@ class EasyTunnelApp:
             control.update()
         self._update_preview(None)
 
-    def _save_form(self, _: object) -> None:
+    def _save_form(
+        self,
+        _: object,
+        *,
+        generation: int | None = None,
+    ) -> None:
+        if generation is not None and generation != self._form_generation:
+            return
         error_control = self._form.get("error")
         try:
             config = self._form_config()
@@ -1298,7 +1492,7 @@ class EasyTunnelApp:
         self.manager.set_configs(self.configs)
         if isinstance(error_control, ft.Text):
             error_control.value = ""
-        self._close_dialog()
+        self._close_dialog(generation=generation)
         self._last_fingerprint = ()
         self._render()
         self._toast("隧道配置已保存")
@@ -1309,9 +1503,14 @@ class EasyTunnelApp:
             control.value = message
             control.update()
 
-    def _close_dialog(self) -> None:
+    def _close_dialog(self, *, generation: int | None = None) -> None:
+        if generation is not None and generation != self._form_generation:
+            return
         if self._form_dialog:
             self.page.close(self._form_dialog)
+        self._form_dialog = None
+        self._form_generation += 1
+        self._file_picker_generation = None
 
     def _toggle(self, tunnel_id: str, enabled: bool) -> None:
         with self._toggle_lock:

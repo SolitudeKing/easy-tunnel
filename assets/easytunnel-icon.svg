@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <title>EasyTunnel application icon</title>
+  <rect width="1024" height="1024" rx="224" fill="#101828"/>
+  <path
+    d="M286 742V438C286 300 387 198 512 198s226 102 226 240v304"
+    fill="none"
+    stroke="#4F6BED"
+    stroke-linecap="round"
+    stroke-width="112"
+  />
+  <path
+    d="M400 742V452c0-70 49-126 112-126s112 56 112 126v290"
+    fill="none"
+    stroke="#F7FAFF"
+    stroke-linecap="round"
+    stroke-width="38"
+  />
+  <path
+    d="M184 626h226c58 0 54-94 102-94s44 94 102 94h226"
+    fill="none"
+    stroke="#43D7C5"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    stroke-width="48"
+  />
+  <circle cx="184" cy="626" r="56" fill="#F7FAFF"/>
+  <circle cx="184" cy="626" r="28" fill="#43D7C5"/>
+  <circle cx="840" cy="626" r="56" fill="#F7FAFF"/>
+  <circle cx="840" cy="626" r="28" fill="#43D7C5"/>
+</svg>
