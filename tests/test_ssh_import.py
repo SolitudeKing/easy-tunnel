@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from easytunnel.ssh_import import (
-    ImportedForward,
+from easytunnel.model.ssh_import import ImportedForward
+from easytunnel.service.ssh_import_service import (
     SSHImportError,
     parse_ssh_command,
     parse_variable_definitions,
@@ -64,14 +64,11 @@ def test_three_part_forward_defaults_to_ipv4_loopback() -> None:
 
 def test_ipv6_forward_and_destination_are_unbracketed_in_result() -> None:
     imported = parse_ssh_command(
-        "ssh -i key -L '[::1]:13389:[fd00::88]:3389' "
-        "alice@[2001:db8::10] -N -T"
+        "ssh -i key -L '[::1]:13389:[fd00::88]:3389' alice@[2001:db8::10] -N -T"
     )
 
     assert imported.ssh_host == "2001:db8::10"
-    assert imported.forwards == (
-        ImportedForward("::1", 13389, "fd00::88", 3389),
-    )
+    assert imported.forwards == (ImportedForward("::1", 13389, "fd00::88", 3389),)
 
 
 def test_current_safe_builder_options_and_disabled_config_are_accepted() -> None:
@@ -97,8 +94,7 @@ def test_current_safe_builder_options_and_disabled_config_are_accepted() -> None
 def test_variable_expansion_occurs_after_tokenization() -> None:
     identity_file = r"C:\keys\a key; $not-a-command"
     imported = parse_ssh_command(
-        "ssh -i $PrivateKey -L 127.0.0.1:$LocalPort:db.test:3306 "
-        "alice@gateway.test -N",
+        "ssh -i $PrivateKey -L 127.0.0.1:$LocalPort:db.test:3306 alice@gateway.test -N",
         {"PrivateKey": identity_file, "LocalPort": "13306"},
     )
 
@@ -136,8 +132,7 @@ def test_parse_variable_definitions_supports_quotes_and_rejects_duplicates() -> 
             "undefined_variable",
         ),
         (
-            "ssh -i 'key' -L 127.0.0.1:${Broken:host.test:3389 "
-            "alice@gateway.test -N",
+            "ssh -i 'key' -L 127.0.0.1:${Broken:host.test:3389 alice@gateway.test -N",
             "invalid_variable_expression",
         ),
         (
@@ -153,10 +148,7 @@ def test_missing_or_malformed_variables_are_rejected(command: str, code: str) ->
 
 
 def test_variable_cannot_inject_another_forward_through_a_port() -> None:
-    command = (
-        "ssh -i key -L 127.0.0.1:$Port:host.test:3389 "
-        "alice@gateway.test -N"
-    )
+    command = "ssh -i key -L 127.0.0.1:$Port:host.test:3389 alice@gateway.test -N"
 
     with pytest.raises(SSHImportError) as caught:
         parse_ssh_command(command, {"Port": "13389 -R 9000:host:9000"})
@@ -164,10 +156,7 @@ def test_variable_cannot_inject_another_forward_through_a_port() -> None:
 
 
 def test_extremely_long_numeric_port_is_reported_as_import_error() -> None:
-    command = (
-        "ssh -i key -L 127.0.0.1:$Port:host.test:3389 "
-        "alice@gateway.test -N"
-    )
+    command = "ssh -i key -L 127.0.0.1:$Port:host.test:3389 alice@gateway.test -N"
 
     with pytest.raises(SSHImportError) as caught:
         parse_ssh_command(command, {"Port": "9" * 5000})
@@ -187,10 +176,7 @@ def test_extremely_long_numeric_port_is_reported_as_import_error() -> None:
     ],
 )
 def test_unsafe_values_for_known_options_are_rejected(option: str) -> None:
-    command = (
-        f"ssh -i key -L 13389:host.test:3389 -o {option} "
-        "alice@gateway.test -N"
-    )
+    command = f"ssh -i key -L 13389:host.test:3389 -o {option} alice@gateway.test -N"
 
     with pytest.raises(SSHImportError) as caught:
         parse_ssh_command(command)
@@ -209,10 +195,7 @@ def test_unsafe_values_for_known_options_are_rejected(option: str) -> None:
     ],
 )
 def test_unknown_or_dangerous_options_are_rejected(argument: str) -> None:
-    command = (
-        f"ssh -i key -L 13389:host.test:3389 {argument} "
-        "alice@gateway.test -N"
-    )
+    command = f"ssh -i key -L 13389:host.test:3389 {argument} alice@gateway.test -N"
 
     with pytest.raises(SSHImportError) as caught:
         parse_ssh_command(command)
@@ -221,8 +204,7 @@ def test_unknown_or_dangerous_options_are_rejected(argument: str) -> None:
 
 def test_external_ssh_config_is_rejected() -> None:
     command = (
-        "ssh -F custom-config -i key -L 13389:host.test:3389 "
-        "alice@gateway.test -N"
+        "ssh -F custom-config -i key -L 13389:host.test:3389 alice@gateway.test -N"
     )
 
     with pytest.raises(SSHImportError) as caught:
@@ -233,15 +215,13 @@ def test_external_ssh_config_is_rejected() -> None:
 def test_non_loopback_bind_and_duplicate_forwards_are_rejected() -> None:
     with pytest.raises(SSHImportError) as non_loopback:
         parse_ssh_command(
-            "ssh -i key -L 0.0.0.0:13389:host.test:3389 "
-            "alice@gateway.test -N"
+            "ssh -i key -L 0.0.0.0:13389:host.test:3389 alice@gateway.test -N"
         )
     assert non_loopback.value.code == "non_loopback_bind"
 
     with pytest.raises(SSHImportError) as duplicate:
         parse_ssh_command(
-            "ssh -i key -L 13389:a.test:3389 -L 13389:b.test:3389 "
-            "alice@gateway.test -N"
+            "ssh -i key -L 13389:a.test:3389 -L 13389:b.test:3389 alice@gateway.test -N"
         )
     assert duplicate.value.code == "duplicate_forward"
 

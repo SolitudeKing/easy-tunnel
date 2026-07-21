@@ -8,14 +8,14 @@ from urllib.request import Request
 import pytest
 from packaging.version import Version
 
-from easytunnel import updater
-from easytunnel.updater import (
-    UpdateError,
-    UpdateInfo,
+from easytunnel.model.update import UpdateError, UpdateInfo
+from easytunnel.repository import update_repository as updater
+from easytunnel.repository.update_repository import (
     download_installer,
     fetch_latest_update,
     parse_latest_release,
 )
+from easytunnel.service.update_service import is_packaged_windows_runtime
 
 
 class _Response(BytesIO):
@@ -44,8 +44,7 @@ def _release(version: str, assets: list[dict[str, object]]) -> dict[str, object]
     return {
         "tag_name": f"v{version}",
         "html_url": (
-            "https://github.com/SolitudeKing/easy-tunnel/releases/tag/"
-            f"v{version}"
+            f"https://github.com/SolitudeKing/easy-tunnel/releases/tag/v{version}"
         ),
         "body": "更新内容",
         "draft": False,
@@ -81,9 +80,9 @@ def test_detects_flet_packaged_windows_runtime() -> None:
         "FLET_APP_STORAGE_DATA": r"C:\Users\tester\Documents\flet\easytunnel",
     }
 
-    assert updater._is_packaged_windows_runtime("nt", production_environment)
-    assert not updater._is_packaged_windows_runtime("posix", production_environment)
-    assert not updater._is_packaged_windows_runtime(
+    assert is_packaged_windows_runtime("nt", production_environment)
+    assert not is_packaged_windows_runtime("posix", production_environment)
+    assert not is_packaged_windows_runtime(
         "nt",
         {"FLET_ASSETS_DIR": r"C:\project\assets"},
     )

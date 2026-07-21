@@ -22,8 +22,9 @@ def run(argv: list[str] | None = None) -> None:
     import flet as ft
 
     from .app import main
+    from .config.paths import runtime_assets_directory
 
-    ft.app(target=main)
+    ft.app(target=main, assets_dir=str(runtime_assets_directory()))
 
 
 if __name__ == "__main__":

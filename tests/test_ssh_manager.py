@@ -4,8 +4,9 @@ import threading
 import time
 from pathlib import Path
 
-from easytunnel.models import LocalForward, TunnelConfig, TunnelState
-from easytunnel.ssh_manager import SSHManager, _powershell_join
+from easytunnel.model.tunnel import LocalForward, TunnelConfig, TunnelState
+from easytunnel.service.ssh_tunnel_service import SSHTunnelService as SSHManager
+from easytunnel.utils.shell import powershell_join as _powershell_join
 
 
 def forward(**changes: object) -> LocalForward:
@@ -71,10 +72,24 @@ def test_ipv6_hosts_are_bracketed_in_forward_spec(tmp_path: Path) -> None:
 def test_multiple_forwards_share_one_secure_command(tmp_path: Path) -> None:
     manager = SSHManager(ssh_executable="ssh")
     forwards = (
-        forward(name="MySQL", local_port=13306, remote_host="127.0.0.1", remote_port=3369),
-        forward(name="Redis", local_port=16380, remote_host="127.0.0.1", remote_port=6380),
-        forward(name="MinIO API", local_port=19000, remote_host="127.0.0.1", remote_port=9000),
-        forward(name="MinIO Console", local_port=19001, remote_host="127.0.0.1", remote_port=9001),
+        forward(
+            name="MySQL", local_port=13306, remote_host="127.0.0.1", remote_port=3369
+        ),
+        forward(
+            name="Redis", local_port=16380, remote_host="127.0.0.1", remote_port=6380
+        ),
+        forward(
+            name="MinIO API",
+            local_port=19000,
+            remote_host="127.0.0.1",
+            remote_port=9000,
+        ),
+        forward(
+            name="MinIO Console",
+            local_port=19001,
+            remote_host="127.0.0.1",
+            remote_port=9001,
+        ),
     )
     args = manager.build_command(config(tmp_path / "key", forwards=forwards))
 
@@ -116,15 +131,23 @@ def test_duplicate_start_is_rejected_without_spawning(tmp_path: Path) -> None:
     manager = SSHManager(ssh_executable="ssh")
     tunnel = config(key)
     manager.set_configs([tunnel])
-    runtime = manager._items[tunnel.id]  # exercise the concurrency guard without network access
+    runtime = manager._items[
+        tunnel.id
+    ]  # exercise the concurrency guard without network access
     runtime.state = TunnelState.CONNECTING
     assert manager.start(tunnel.id) is False
 
 
 def test_friendly_openssh_errors() -> None:
-    assert "公钥认证失败" in SSHManager._friendly_error("Permission denied (publickey).", 255)
-    assert "端口已被占用" in SSHManager._friendly_error("bind: Address already in use", 255)
-    assert "主机名" in SSHManager._friendly_error("Could not resolve hostname sample", 255)
+    assert "公钥认证失败" in SSHManager._friendly_error(
+        "Permission denied (publickey).", 255
+    )
+    assert "端口已被占用" in SSHManager._friendly_error(
+        "bind: Address already in use", 255
+    )
+    assert "主机名" in SSHManager._friendly_error(
+        "Could not resolve hostname sample", 255
+    )
 
 
 def test_friendly_error_uses_latest_meaningful_output_line() -> None:
@@ -206,7 +229,9 @@ def _wait_until(predicate: object, timeout: float = 1.5) -> bool:
     return False
 
 
-def test_successful_lifecycle_reaches_connected_then_stops(tmp_path: Path, monkeypatch: object) -> None:
+def test_successful_lifecycle_reaches_connected_then_stops(
+    tmp_path: Path, monkeypatch: object
+) -> None:
     key = tmp_path / "key"
     key.write_text("fake", encoding="utf-8")
     manager = SSHManager(ssh_executable="ssh", startup_timeout=0.2)
@@ -225,14 +250,20 @@ def test_successful_lifecycle_reaches_connected_then_stops(tmp_path: Path, monke
     monkeypatch.setattr(manager, "_port_is_listening", lambda *_: True)  # type: ignore[attr-defined]
 
     assert manager.start(tunnel.id) is True
-    assert _wait_until(lambda: manager.snapshot(tunnel.id).state == TunnelState.CONNECTED)  # type: ignore[union-attr]
+    assert _wait_until(
+        lambda: manager.snapshot(tunnel.id).state == TunnelState.CONNECTED
+    )  # type: ignore[union-attr]
     assert captured["kwargs"]["shell"] is False  # type: ignore[index]
     assert manager.stop(tunnel.id) is True
-    assert _wait_until(lambda: manager.snapshot(tunnel.id).state == TunnelState.DISCONNECTED)  # type: ignore[union-attr]
+    assert _wait_until(
+        lambda: manager.snapshot(tunnel.id).state == TunnelState.DISCONNECTED
+    )  # type: ignore[union-attr]
     assert fake.terminated is True
 
 
-def test_shutdown_cancels_process_created_during_start(tmp_path: Path, monkeypatch: object) -> None:
+def test_shutdown_cancels_process_created_during_start(
+    tmp_path: Path, monkeypatch: object
+) -> None:
     key = tmp_path / "key"
     key.write_text("fake", encoding="utf-8")
     manager = SSHManager(ssh_executable="ssh")
@@ -262,7 +293,9 @@ def test_shutdown_cancels_process_created_during_start(tmp_path: Path, monkeypat
     assert manager.start(tunnel.id) is False
 
 
-def test_occupied_port_in_group_prevents_process_spawn(tmp_path: Path, monkeypatch: object) -> None:
+def test_occupied_port_in_group_prevents_process_spawn(
+    tmp_path: Path, monkeypatch: object
+) -> None:
     key = tmp_path / "key"
     key.write_text("fake", encoding="utf-8")
     manager = SSHManager(ssh_executable="ssh")

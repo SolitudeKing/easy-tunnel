@@ -3,8 +3,11 @@ from pathlib import Path
 
 import pytest
 
-from easytunnel.config_store import ConfigError, ConfigStore
-from easytunnel.models import LocalForward, TunnelConfig
+from easytunnel.model.tunnel import LocalForward, TunnelConfig
+from easytunnel.repository.tunnel_repository import (
+    ConfigError,
+    TunnelRepository as ConfigStore,
+)
 
 
 def sample(key: Path, *, extra_forward: bool = False) -> TunnelConfig:
@@ -96,7 +99,9 @@ def test_saved_document_has_schema_version(tmp_path: Path) -> None:
     assert len(data["tunnels"]) == 1
 
 
-def test_v1_document_migrates_to_stable_forward_and_new_keepalive(tmp_path: Path) -> None:
+def test_v1_document_migrates_to_stable_forward_and_new_keepalive(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "tunnels.json"
     path.write_text(json.dumps(legacy_document()), encoding="utf-8")
     store = ConfigStore(path)
@@ -135,7 +140,9 @@ def test_future_schema_is_rejected_without_overwriting(tmp_path: Path) -> None:
 @pytest.mark.parametrize("version", [0, -1, True, "2"])
 def test_invalid_schema_version_is_rejected(tmp_path: Path, version: object) -> None:
     path = tmp_path / "tunnels.json"
-    path.write_text(json.dumps({"schema_version": version, "tunnels": []}), encoding="utf-8")
+    path.write_text(
+        json.dumps({"schema_version": version, "tunnels": []}), encoding="utf-8"
+    )
     with pytest.raises(ConfigError, match="版本.*无效"):
         ConfigStore(path).load()
 
@@ -154,7 +161,9 @@ def test_string_boolean_is_rejected(tmp_path: Path) -> None:
     path = tmp_path / "tunnels.json"
     data = sample(tmp_path / "key").to_dict()
     data["auto_connect"] = "false"
-    path.write_text(json.dumps({"schema_version": 2, "tunnels": [data]}), encoding="utf-8")
+    path.write_text(
+        json.dumps({"schema_version": 2, "tunnels": [data]}), encoding="utf-8"
+    )
     with pytest.raises(ConfigError, match="无法读取配置"):
         ConfigStore(path).load()
 
@@ -163,6 +172,8 @@ def test_invalid_v2_forward_structure_is_rejected(tmp_path: Path) -> None:
     path = tmp_path / "tunnels.json"
     data = sample(tmp_path / "key").to_dict()
     data["forwards"] = ["not-an-object"]
-    path.write_text(json.dumps({"schema_version": 2, "tunnels": [data]}), encoding="utf-8")
+    path.write_text(
+        json.dumps({"schema_version": 2, "tunnels": [data]}), encoding="utf-8"
+    )
     with pytest.raises(ConfigError, match="无法读取配置"):
         ConfigStore(path).load()

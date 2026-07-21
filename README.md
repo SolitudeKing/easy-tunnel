@@ -99,7 +99,9 @@ ssh-add E:\XM\pi-server
 uv run pytest -q
 ```
 
-测试不连接真实 SSH 服务器，覆盖配置校验与迁移、多转发和变量解析、持久化、IPv6 转发格式、安全命令构造、监听就绪和错误状态。
+测试不连接真实 SSH 服务器，按 Model、Repository、Service、ViewModel 与 View
+分层覆盖配置校验与迁移、多转发和变量解析、持久化、IPv6 转发格式、安全命令
+构造、监听就绪、错误状态和 Flet 控件树序列化。
 
 ## 版本与发布
 
@@ -109,20 +111,36 @@ Windows 安装版会在启动时后台检查最新稳定版本。发现更新后
 
 ## 项目结构
 
-下一阶段的功能规划、详细规格、架构演进和发布指南统一放在 [docs/](docs/README.md)。
+项目采用 MVVM 架构，主业务依赖方向为
+`View / Component → ViewModel → Service / Repository → Model`；View 仅为表单和
+资源显示只读依赖 Model/Config。完整职责与兼容策略见
+[MVVM 架构文档](docs/ARCHITECTURE.md)，其它规划和发布指南统一放在
+[docs/](docs/README.md)。
 
 ```text
 EasyTunnel/
+├─ easytunnel/
+│  ├─ component/
+│  │  ├─ dialog/                 # 对话框公共组件
+│  │  └─ widget/                 # 主题与通用控件
+│  ├─ view/                      # Flet 视图层
+│  ├─ viewmodel/                 # 页面状态与用例编排
+│  ├─ model/                     # 配置、状态和 DTO
+│  ├─ repository/                # 配置与更新数据仓库
+│  ├─ service/                   # SSH、导入、更新和平台服务
+│  ├─ utils/                     # 纯工具函数
+│  ├─ config/                    # 路径与资源配置
+│  ├─ app.py                     # 组合根与兼容入口
+│  ├─ __main__.py                # 模块/安装后命令入口
+│  └─ __init__.py
+├─ assets/
+│  ├─ images/                    # 界面图片
+│  ├─ icons/                     # SVG/ICO 图标
+│  └─ icon.png                   # Flet 构建兼容入口
+├─ tests/                        # 分层自动化测试
+├─ docs/                         # 架构、规格与发布文档
 ├─ main.py                       # Flet 入口
 ├─ start.bat                     # Windows 双击启动入口
-├─ easytunnel/
-│  ├─ __main__.py                # 模块/安装后命令入口
-│  ├─ app.py                     # 界面与交互
-│  ├─ models.py                  # 配置、状态和日志模型
-│  ├─ config_store.py            # JSON 配置持久化
-│  ├─ ssh_import.py              # 安全 SSH 命令与变量解析
-│  └─ ssh_manager.py             # OpenSSH 进程生命周期
-├─ tests/                        # 核心层自动化测试
 ├─ pyproject.toml
 └─ uv.lock                       # 受版本控制的依赖锁定文件
 ```

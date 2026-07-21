@@ -341,13 +341,13 @@ state_before, state_after, attempt, message, details
 
 以下拆分能让每个改动保持可评审：
 
-1. `domain: 新状态和 TunnelEvent 模型`
-2. `manager: generation token 与取消语义`
-3. `manager: ReconnectPolicy 调度器`
-4. `ui: 重连状态与操作`
+1. `model: 新状态和 TunnelEvent 模型`
+2. `service: generation token 与取消语义`
+3. `service: ReconnectPolicy 调度器`
+4. `viewmodel: 重连状态与操作`
 5. `health: 单次 TCP 服务探测`
 6. `ui: 双层健康状态`
-7. `application: 一次性连接后打开意图`
+7. `viewmodel: 一次性连接后打开意图`
 8. `ui: 卡片连接并打开主操作`
 9. `platform/windows: Job Object 监管`
 10. `platform/windows: 单实例与窗口激活`

@@ -7,9 +7,10 @@ import pytest
 from packaging.version import Version
 
 import easytunnel.app as app_module
-from easytunnel.app import EasyTunnelApp
-from easytunnel.models import LocalForward, TunnelConfig
-from easytunnel.updater import UpdateError, UpdateInfo
+from easytunnel.model.tunnel import LocalForward, TunnelConfig
+from easytunnel.model.update import UpdateError, UpdateInfo
+from easytunnel.view.app_view import EasyTunnelApp
+from easytunnel.viewmodel.app_viewmodel import EasyTunnelViewModel
 
 
 def test_loopback_validation_accepts_ipv4_ipv6_and_localhost() -> None:
@@ -40,6 +41,10 @@ class _FakePage:
         self.opened: list[ft.Control] = []
         self.closed: list[ft.Control] = []
         self.clipboard = ""
+        self.overlay: list[ft.Control] = []
+        self.controls: list[ft.Control] = []
+        self.tasks: list[tuple[object, tuple[object, ...]]] = []
+        self.window = _FakeWindow()
 
     def open(self, control: ft.Control) -> None:
         self.opened.append(control)
@@ -49,6 +54,43 @@ class _FakePage:
 
     def set_clipboard(self, value: str) -> None:
         self.clipboard = value
+
+    def add(self, *controls: ft.Control) -> None:
+        self.controls.extend(controls)
+
+    def update(self) -> None:
+        return None
+
+    def run_task(self, handler: object, *args: object) -> None:
+        self.tasks.append((handler, args))
+
+
+class _FakeWindow:
+    def __init__(self) -> None:
+        self.width = 0
+        self.height = 0
+        self.min_width = 0
+        self.min_height = 0
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _assert_control_tree_serializes(control: ft.Control) -> None:
+    commands = control._build_add_commands()
+    assert commands
+    assert all(command.values and command.values[-1] for command in commands)
+
+
+def _find_by_key(control: ft.Control, key: str) -> ft.Control:
+    pending = [control]
+    while pending:
+        current = pending.pop()
+        if getattr(current, "key", None) == key:
+            return current
+        pending.extend(current._get_children())
+    raise AssertionError(f"control key not found: {key}")
 
 
 def _multi_forward_config(tmp_path: Path) -> TunnelConfig:
@@ -106,14 +148,190 @@ def test_all_primary_views_construct_with_pinned_flet(
     page = _FakePage()
     app = EasyTunnelApp(page)  # type: ignore[arg-type]
 
-    assert isinstance(app._build_sidebar(), ft.Container)
-    assert app._tunnels_view() is not None
-    assert app._logs_view() is not None
-    assert app._settings_view() is not None
+    sidebar = app._build_sidebar()
+    tunnels = app._tunnels_view()
+    logs = app._logs_view()
+    settings = app._settings_view()
+    assert isinstance(sidebar, ft.Container)
+    for control in (sidebar, tunnels, logs, settings):
+        _assert_control_tree_serializes(control)
 
     app._open_form()
     assert page.opened
     assert isinstance(page.opened[-1], ft.AlertDialog)
+    _assert_control_tree_serializes(page.opened[-1])
+
+
+def test_mount_applies_mist_theme_and_serializable_shell(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EASYTUNNEL_CONFIG", str(tmp_path / "tunnels.json"))
+    page = _FakePage()
+    app = EasyTunnelApp(
+        page,  # type: ignore[arg-type]
+        EasyTunnelViewModel(packaged_detector=lambda: False),
+    )
+
+    app.mount()
+
+    assert page.bgcolor == app_module.BG
+    assert page.theme_mode == ft.ThemeMode.LIGHT
+    assert page.theme.color_scheme.primary == app_module.PRIMARY
+    assert page.theme.color_scheme.surface == app_module.SURFACE
+    assert isinstance(app.body.gradient, ft.LinearGradient)
+    assert app.body.gradient.colors == [
+        app_module.BG,
+        app_module.SURFACE,
+        app_module.BG_SECONDARY,
+    ]
+    assert len(app.body.gradient.stops) == len(app.body.gradient.colors)
+    assert page.window.min_width == 960
+    assert page.window.min_height == 680
+    assert page.window.icon == app_module.APP_WINDOW_ICON_ASSET
+    repo_root = Path(__file__).parents[1]
+    window_icon = repo_root / "assets" / app_module.APP_WINDOW_ICON_ASSET
+    assert window_icon.is_file()
+    assert (
+        window_icon.read_bytes()
+        == (repo_root / "installer" / "EasyTunnel.ico").read_bytes()
+    )
+    assert len(page.controls) == 1
+    shell = ft.Container(theme=page.theme, content=page.controls[0])
+    _assert_control_tree_serializes(shell)
+
+
+def test_tunnel_empty_states_remain_actionable_and_serializable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EASYTUNNEL_CONFIG", str(tmp_path / "tunnels.json"))
+    config = _multi_forward_config(tmp_path)
+    page = _FakePage()
+    app = EasyTunnelApp(page)  # type: ignore[arg-type]
+    app.configs = [config]
+    app.manager.set_configs(app.configs)
+    app.search_query = "not-a-match"
+
+    filtered_view = app._tunnels_view()
+    filtered_empty = _find_by_key(filtered_view, "tunnel-empty-state")
+    assert isinstance(filtered_empty, ft.Container)
+    _assert_control_tree_serializes(filtered_view)
+
+    app.configs = []
+    app.manager.set_configs([])
+    app.search_query = ""
+    fresh_view = app._tunnels_view()
+    fresh_empty = _find_by_key(fresh_view, "tunnel-empty-state")
+    assert isinstance(fresh_empty, ft.Container)
+    _assert_control_tree_serializes(fresh_view)
+
+
+def test_application_shell_uses_one_mist_sea_salt_semantic_system(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EASYTUNNEL_CONFIG", str(tmp_path / "tunnels.json"))
+    page = _FakePage()
+    app = EasyTunnelApp(page)  # type: ignore[arg-type]
+
+    assert app_module.FORM_BG == app_module.BG
+    assert app_module.FORM_SURFACE == app_module.SURFACE
+    assert app_module.FORM_ACCENT == app_module.PRIMARY
+    assert app_module.FORM_BORDER == app_module.BORDER
+
+    sidebar = app._build_sidebar()
+    assert isinstance(sidebar.gradient, ft.LinearGradient)
+    logo = _find_by_key(sidebar, "app-logo")
+    assert isinstance(logo, ft.Image)
+    assert logo.src == app_module.APP_LOGO_ASSET
+    assert (Path(__file__).parents[1] / "assets" / logo.src).is_file()
+    selected_nav = app.nav_controls["tunnels"]
+    assert selected_nav.bgcolor == app_module.PRIMARY_SOFT
+    assert selected_nav.border.left.width == 3
+    assert selected_nav.border.left.color == app_module.PRIMARY
+
+    tunnels = app._tunnels_view()
+    summary = _find_by_key(tunnels, "tunnel-summary")
+    assert isinstance(summary, ft.Container)
+    assert isinstance(summary.gradient, ft.LinearGradient)
+    assert isinstance(summary.content, ft.Row)
+
+    logs = _find_by_key(app._logs_view(), "logs-shared-surface")
+    settings = _find_by_key(app._settings_view(), "settings-main-surface")
+    update_focus = _find_by_key(app._settings_view(), "settings-update-focus")
+    assert isinstance(logs, ft.Container)
+    assert isinstance(settings, ft.Container)
+    assert isinstance(update_focus, ft.Container)
+    assert isinstance(update_focus.gradient, ft.LinearGradient)
+
+    primary = app._primary_button_style()
+    secondary = app._secondary_button_style()
+    danger = app._danger_button_style()
+    assert primary.bgcolor[ft.ControlState.HOVERED] == app_module.PRIMARY_HOVER
+    assert primary.bgcolor[ft.ControlState.PRESSED] == app_module.PRIMARY_ACTIVE
+    assert primary.side[ft.ControlState.FOCUSED].width == 2
+    assert secondary.side[ft.ControlState.FOCUSED].width == 2
+    assert danger.side[ft.ControlState.FOCUSED].width == 2
+
+
+def test_feedback_surfaces_serialize_with_mist_sea_salt_styles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EASYTUNNEL_CONFIG", str(tmp_path / "tunnels.json"))
+    config = _multi_forward_config(tmp_path)
+    page = _FakePage()
+    app = EasyTunnelApp(page)  # type: ignore[arg-type]
+    app.configs = [config]
+    app.manager.set_configs(app.configs)
+
+    app._confirm_delete(config.id)
+    delete_dialog = page.opened[-1]
+    assert isinstance(delete_dialog, ft.AlertDialog)
+    assert delete_dialog.bgcolor == app_module.SURFACE
+    assert isinstance(delete_dialog.shape, ft.RoundedRectangleBorder)
+    assert delete_dialog.shape.radius == 24
+    _assert_control_tree_serializes(delete_dialog)
+
+    app._toast("连接已建立")
+    snackbar = page.opened[-1]
+    assert isinstance(snackbar, ft.SnackBar)
+    assert snackbar.bgcolor == app_module.PRIMARY_ACTIVE
+    assert snackbar.show_close_icon is True
+    _assert_control_tree_serializes(snackbar)
+
+
+def test_tunnel_form_uses_mist_sea_salt_visual_tokens(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EASYTUNNEL_CONFIG", str(tmp_path / "tunnels.json"))
+    page = _FakePage()
+    app = EasyTunnelApp(page)  # type: ignore[arg-type]
+
+    app._open_form()
+
+    dialog = app._form_dialog
+    assert dialog is not None
+    assert dialog.bgcolor == app_module.FORM_SURFACE
+    assert isinstance(dialog.shape, ft.RoundedRectangleBorder)
+    assert dialog.shape.radius == 24
+    assert isinstance(dialog.title, ft.Row)
+    assert isinstance(dialog.content, ft.Container)
+    assert dialog.content.width == 860
+    assert dialog.content.height == 460
+    assert isinstance(dialog.content.gradient, ft.LinearGradient)
+    assert isinstance(dialog.actions[0], ft.OutlinedButton)
+    assert isinstance(dialog.actions[1], ft.ElevatedButton)
+
+    name_field = app._form["name"]
+    assert isinstance(name_field, ft.TextField)
+    assert name_field.filled is True
+    assert name_field.fill_color == app_module.FORM_SURFACE
+    assert name_field.border_color == app_module.FORM_BORDER_STRONG
+    assert name_field.focused_border_color == app_module.FORM_ACCENT
+    assert app._form_forward_rows[0].container.bgcolor == app_module.FORM_CARD
 
 
 def test_edit_form_round_trips_multiple_forward_rows(
@@ -233,6 +451,8 @@ def test_import_dialog_converts_variables_and_multiple_forwards(
     page = _FakePage()
     app = EasyTunnelApp(page)  # type: ignore[arg-type]
     app._open_import_dialog(None)
+    assert isinstance(page.opened[-1], ft.AlertDialog)
+    _assert_control_tree_serializes(page.opened[-1])
     assert app._import_command is not None
     app._import_command.value = f"""
 PrivateKey={key}
@@ -295,14 +515,18 @@ def test_update_check_failure_restores_manual_retry(
     failure: Exception,
 ) -> None:
     monkeypatch.setenv("EASYTUNNEL_CONFIG", str(tmp_path / "tunnels.json"))
-    monkeypatch.setattr(app_module, "is_packaged_windows_app", lambda: True)
 
     def fail_update_check(_: str) -> None:
         raise failure
 
-    monkeypatch.setattr(app_module, "fetch_latest_update", fail_update_check)
     page = _FakePage()
-    app = EasyTunnelApp(page)  # type: ignore[arg-type]
+    app = EasyTunnelApp(
+        page,  # type: ignore[arg-type]
+        EasyTunnelViewModel(
+            packaged_detector=lambda: True,
+            update_fetcher=fail_update_check,
+        ),
+    )
     app.current_view = "settings"
     rendered_states: list[bool] = []
     monkeypatch.setattr(
@@ -324,10 +548,14 @@ def test_update_check_reports_current_version_and_restores_button(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("EASYTUNNEL_CONFIG", str(tmp_path / "tunnels.json"))
-    monkeypatch.setattr(app_module, "is_packaged_windows_app", lambda: True)
-    monkeypatch.setattr(app_module, "fetch_latest_update", lambda _: None)
     page = _FakePage()
-    app = EasyTunnelApp(page)  # type: ignore[arg-type]
+    app = EasyTunnelApp(
+        page,  # type: ignore[arg-type]
+        EasyTunnelViewModel(
+            packaged_detector=lambda: True,
+            update_fetcher=lambda _: None,
+        ),
+    )
     app.current_view = "settings"
     rendered_states: list[bool] = []
     monkeypatch.setattr(
@@ -347,7 +575,6 @@ def test_update_check_opens_new_version_dialog(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("EASYTUNNEL_CONFIG", str(tmp_path / "tunnels.json"))
-    monkeypatch.setattr(app_module, "is_packaged_windows_app", lambda: True)
     update = UpdateInfo(
         version=Version("0.2.0"),
         installer_name="EasyTunnel-Setup-0.2.0.exe",
@@ -357,9 +584,14 @@ def test_update_check_opens_new_version_dialog(
         release_url="https://example.test/release",
         release_notes="更新说明",
     )
-    monkeypatch.setattr(app_module, "fetch_latest_update", lambda _: update)
     page = _FakePage()
-    app = EasyTunnelApp(page)  # type: ignore[arg-type]
+    app = EasyTunnelApp(
+        page,  # type: ignore[arg-type]
+        EasyTunnelViewModel(
+            packaged_detector=lambda: True,
+            update_fetcher=lambda _: update,
+        ),
+    )
     app.current_view = "settings"
     rendered_states: list[bool] = []
     monkeypatch.setattr(
@@ -372,4 +604,5 @@ def test_update_check_opens_new_version_dialog(
 
     assert app._update_status == "发现新版本 0.2.0。"
     assert isinstance(page.opened[-1], ft.AlertDialog)
+    _assert_control_tree_serializes(page.opened[-1])
     assert rendered_states == [True, False]

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from easytunnel.models import LocalForward, TunnelConfig
+from easytunnel.model.tunnel import LocalForward, TunnelConfig
 
 
 def make_forward(**changes: object) -> LocalForward:
@@ -57,7 +57,9 @@ def test_control_characters_and_unsafe_username_are_rejected() -> None:
 def test_missing_key_is_only_checked_for_connection(tmp_path: Path) -> None:
     config = make_config(identity_file=str(tmp_path / "missing"))
     assert config.validate(require_key_exists=False) == []
-    assert any("私钥文件不存在" in error for error in config.validate(require_key_exists=True))
+    assert any(
+        "私钥文件不存在" in error for error in config.validate(require_key_exists=True)
+    )
 
 
 def test_unknown_json_fields_are_ignored() -> None:

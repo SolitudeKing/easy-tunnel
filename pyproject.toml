@@ -23,5 +23,13 @@ pythonpath = ["."]
 [tool.setuptools.packages.find]
 include = ["easytunnel*"]
 
+[tool.setuptools.data-files]
+"share/easytunnel/assets" = ["assets/icon.png"]
+"share/easytunnel/assets/images" = ["assets/images/easytunnel-logo.png"]
+"share/easytunnel/assets/icons" = [
+    "assets/icons/easytunnel.ico",
+    "assets/icons/easytunnel.svg",
+]
+
 [tool.setuptools.dynamic]
 version = {attr = "easytunnel.__version__"}

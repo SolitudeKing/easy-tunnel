@@ -5,10 +5,25 @@ Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-07-21
+
 ### Added
 
 - Structured forwarding input groups that can be added and removed dynamically.
 - A custom EasyTunnel application icon for the Windows app and installer.
+
+### Changed
+
+- Reorganize the application around MVVM with explicit Model, Repository,
+  Service, ViewModel, View, Component, Config, and Utils layers while retaining
+  compatibility imports for the 0.1.x flat modules.
+- Restyle the tunnel editor with the Mist Sea Salt visual theme and a focused
+  editing-and-preview layout.
+- Extend Mist Sea Salt across the application shell, tunnel workspace, logs,
+  settings, empty states, dialogs, and operation feedback with shared semantic
+  colors and clearer interaction states.
+- Use the bundled EasyTunnel application icon for the in-app brand mark and
+  Windows title bar.
 
 ## [0.1.2] - 2026-07-21
 
