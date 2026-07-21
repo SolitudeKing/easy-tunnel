@@ -97,32 +97,26 @@ easytunnel/
 
 ### 4.1 会话与转发规则
 
-当前 `TunnelConfig` 把 SSH 会话和单条本地映射放在一起。为支持多转发，可逐步拆分：
+当前 `TunnelConfig` 表示一个 SSH 会话，并以不可变元组保存多条 `LocalForward`。每条规则拥有独立名称、服务类型和端点；一个会话只启动一个 SSH 进程并统一启停：
 
 ```python
 @dataclass(frozen=True, slots=True)
-class SSHConnection:
+class LocalForward:
     id: str
-    host: str
-    port: int
-    username: str
-    auth: AuthConfig
-    host_key_policy: HostKeyPolicy
-    proxy_jump_ids: tuple[str, ...] = ()
-
-@dataclass(frozen=True, slots=True)
-class ForwardRule:
-    id: str
-    connection_id: str
-    kind: ForwardKind          # LOCAL / REMOTE / DYNAMIC
+    name: str
     bind_host: str
-    bind_port: int
-    target_host: str | None
-    target_port: int | None
-    service: ServiceDefinition
+    local_port: int
+    remote_host: str
+    remote_port: int
+    service_type: str
+
+@dataclass(slots=True)
+class TunnelConfig:
+    # SSH 主机、认证和保护参数
+    forwards: tuple[LocalForward, ...]
 ```
 
-`0.2.0` 暂时仍可保持一条配置对应一个进程，但新代码接口不要假设永远只有一个 `-L`。
+配置 schema v2 持久化该结构；schema v1 的顶层单转发字段在加载时迁移为一条 `LocalForward`。未来加入 ProxyJump、`-R` 或 `-D` 时，再进一步拆分 `SSHConnection` 与通用 `ForwardRule`，不把任意 SSH 文本塞回模型。
 
 ### 4.2 运行时与配置分离
 
@@ -383,7 +377,7 @@ class ServiceLauncher(Protocol):
 - 给 Runtime 增加 generation、revision。
 - 为现有输出建立稳定 FailureCode。
 
-验收：原有 29 项测试继续通过，并为抽取接口增加等价测试。
+验收：现有自动化测试继续通过，并为抽取接口增加等价测试。
 
 ### 步骤 2：Controller 和事件
 
@@ -406,8 +400,8 @@ class ServiceLauncher(Protocol):
 
 ### 步骤 5：高级模型
 
-- 拆分 SSHConnection 与 ForwardRule。
-- 在迁移测试保护下加入多转发、ProxyJump、`-R`、`-D`。
+- 进一步拆分 SSHConnection 与通用 ForwardRule。
+- 在迁移测试保护下加入 ProxyJump、`-R`、`-D`；本地多转发已由 `LocalForward` 支持。
 
 ## 12. 架构验收指标
 

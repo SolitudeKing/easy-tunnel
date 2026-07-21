@@ -35,6 +35,13 @@ def _forward_host(host: str) -> str:
     return value
 
 
+def _powershell_join(args: list[str]) -> str:
+    def quote(argument: str) -> str:
+        return "'" + argument.replace("'", "''") + "'"
+
+    return "& " + " ".join(quote(argument) for argument in args)
+
+
 class SSHManager:
     def __init__(self, ssh_executable: str | None = None, startup_timeout: float = 12.0) -> None:
         self.ssh_executable = ssh_executable or self.find_ssh()
@@ -112,10 +119,6 @@ class SSHManager:
     def build_command(self, config: TunnelConfig) -> list[str]:
         if not self.ssh_executable:
             raise RuntimeError("未找到 OpenSSH 客户端，请先安装或启用系统 OpenSSH Client")
-        forward = (
-            f"{_forward_host(config.bind_host)}:{config.local_port}:"
-            f"{_forward_host(config.remote_host)}:{config.remote_port}"
-        )
         args = [self.ssh_executable, "-F", os.devnull]
         if config.identity_file:
             args.extend(["-i", str(Path(config.identity_file).expanduser().resolve())])
@@ -123,10 +126,6 @@ class SSHManager:
             [
                 "-p",
                 str(config.ssh_port),
-                "-L",
-                forward,
-                "-N",
-                "-T",
                 "-o",
                 "ExitOnForwardFailure=yes",
                 "-o",
@@ -151,21 +150,23 @@ class SSHManager:
                 "ConnectionAttempts=1",
             ]
         )
-        if config.keepalive_interval:
-            args.extend(
-                [
-                    "-o",
-                    f"ServerAliveInterval={config.keepalive_interval}",
-                    "-o",
-                    "ServerAliveCountMax=3",
-                ]
-            )
+        args.extend(
+            [
+                "-o",
+                f"ServerAliveInterval={config.keepalive_interval}",
+                "-o",
+                "ServerAliveCountMax=3",
+            ]
+        )
+        for forward in config.forwards:
+            args.extend(["-L", forward.to_ssh_spec()])
+        args.extend(["-N", "-T"])
         args.append(f"{config.username}@{_forward_host(config.ssh_host)}")
         return args
 
     def command_preview(self, config: TunnelConfig) -> str:
         args = self.build_command(config)
-        return subprocess.list2cmdline(args) if os.name == "nt" else shlex.join(args)
+        return _powershell_join(args) if os.name == "nt" else shlex.join(args)
 
     def start(self, tunnel_id: str) -> bool:
         with self._lock:
@@ -185,12 +186,19 @@ class SSHManager:
             if not self.ssh_executable:
                 self._set_error(runtime, "未找到 OpenSSH 客户端，请在 Windows 可选功能中安装 OpenSSH Client")
                 return False
-            if not self._is_loopback(runtime.config.bind_host):
-                self._set_error(runtime, "为安全起见，只允许绑定本机回环地址")
-                return False
-            if not self._port_is_available(runtime.config.bind_host, runtime.config.local_port):
-                self._set_error(runtime, f"本地端口 {runtime.config.local_port} 已被占用")
-                return False
+            for forward in runtime.config.forwards:
+                if not self._is_loopback(forward.bind_host):
+                    self._set_error(
+                        runtime,
+                        f"转发“{forward.name}”不是本机回环地址，已拒绝启动",
+                    )
+                    return False
+                if not self._port_is_available(forward.bind_host, forward.local_port):
+                    self._set_error(
+                        runtime,
+                        f"转发“{forward.name}”的本地端口 {forward.local_port} 已被占用",
+                    )
+                    return False
             runtime.state = TunnelState.CONNECTING
             runtime.last_error = ""
             runtime.started_at = None
@@ -272,7 +280,7 @@ class SSHManager:
                 runtime.last_error = ""
                 self._log(runtime, "info", "隧道已断开")
             elif runtime.state != TunnelState.ERROR:
-                recent = runtime.current_errors[-1] if runtime.current_errors else ""
+                recent = "\n".join(runtime.current_errors)
                 self._set_error(runtime, self._friendly_error(recent, code))
 
     def _await_ready(
@@ -289,22 +297,31 @@ class SSHManager:
                 runtime = self._items.get(tunnel_id)
                 if not runtime or runtime.process is not process or runtime.state != TunnelState.CONNECTING:
                     return
-                bind_host = config.bind_host
-                local_port = config.local_port
-            if self._port_is_listening(bind_host, local_port):
+                forwards = config.forwards
+            if all(
+                self._port_is_listening(forward.bind_host, forward.local_port)
+                for forward in forwards
+            ):
                 with self._lock:
                     runtime = self._items.get(tunnel_id)
                     if runtime and runtime.process is process and runtime.state == TunnelState.CONNECTING:
                         runtime.state = TunnelState.CONNECTED
                         runtime.started_at = datetime.now()
-                        self._log(runtime, "success", f"隧道已连接，本地端口 {local_port} 正在监听")
+                        ports = "、".join(str(forward.local_port) for forward in forwards)
+                        self._log(runtime, "success", f"隧道已连接，本地端口 {ports} 正在监听")
                 return
             time.sleep(0.12)
 
         with self._lock:
             runtime = self._items.get(tunnel_id)
             if runtime and runtime.process is process and runtime.state == TunnelState.CONNECTING:
-                self._set_error(runtime, "连接超时：SSH 进程未能建立本地监听端口")
+                pending = [
+                    str(forward.local_port)
+                    for forward in config.forwards
+                    if not self._port_is_listening(forward.bind_host, forward.local_port)
+                ]
+                detail = "、".join(pending) or "未知"
+                self._set_error(runtime, f"连接超时：本地端口 {detail} 未能开始监听")
         self._terminate(process)
 
     def stop(self, tunnel_id: str) -> bool:
@@ -418,20 +435,24 @@ class SSHManager:
 
     @staticmethod
     def _friendly_error(message: str, code: int) -> str:
-        lowered = message.lower()
         mappings = (
             (("address already in use", "cannot listen to port"), "本地端口已被占用"),
-            (("permission denied", "publickey"), "SSH 公钥认证失败，请检查用户名、私钥或 ssh-agent"),
             (("identity file", "not accessible"), "无法读取私钥文件"),
             (("host key verification failed",), "SSH 主机密钥校验失败"),
             (("could not resolve hostname", "name or service not known"), "无法解析 SSH 主机名"),
             (("connection timed out", "operation timed out"), "连接 SSH 服务器超时"),
             (("connection refused",), "SSH 服务器拒绝连接"),
+            (("timeout, server", "connection reset by peer"), "SSH 连接已中断，请检查网络或保活设置"),
         )
-        for needles, friendly in mappings:
-            if any(needle in lowered for needle in needles):
-                return friendly
-        return message or f"SSH 进程意外退出（代码 {code}）"
+        lines = [line.strip() for line in message.splitlines() if line.strip()]
+        for line in reversed(lines):
+            lowered = line.lower()
+            if "permission denied" in lowered and "publickey" in lowered:
+                return "SSH 公钥认证失败，请检查用户名、私钥或 ssh-agent"
+            for needles, friendly in mappings:
+                if any(needle in lowered for needle in needles):
+                    return friendly
+        return lines[-1] if lines else f"SSH 进程意外退出（代码 {code}）"
 
     @staticmethod
     def _log(runtime: _Runtime, level: str, message: str) -> None:

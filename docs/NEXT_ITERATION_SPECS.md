@@ -1,6 +1,6 @@
 # 下一阶段功能规格：`0.2.0` 可靠运行
 
-本文把路线图中的首个里程碑细化为可以直接拆 issue、写代码和验收的功能规格。建议 `0.2.0` 只包含本文件范围；命令导入、ProxyJump、反向转发等留到后续版本。
+本文把路线图中的首个里程碑细化为可以直接拆 issue、写代码和验收的功能规格。命令导入和本地多转发已经提前落地；本文件继续聚焦可靠运行，ProxyJump、反向转发等仍留到后续版本。
 
 ## 1. 版本完成定义
 
@@ -206,7 +206,7 @@ class AppSettings:
     ssh_executable: str = ""
     default_identity_directory: str = ""
     default_connect_timeout: int = 10
-    default_keepalive_interval: int = 15
+    default_keepalive_interval: int = 30
     default_reconnect_policy: ReconnectPolicy = field(default_factory=ReconnectPolicy)
     close_behavior: str = "ask"
     start_with_windows: bool = False
@@ -364,7 +364,7 @@ state_before, state_after, attempt, message, details
 ## 11. 本版本明确不包含
 
 - SSH 密码保存或私钥口令输入。
-- ProxyJump、反向转发、SOCKS、多转发会话。
+- ProxyJump、反向转发、SOCKS。
 - 配置云同步。
 - 任意自定义 Shell 命令。
 - 自动下载或替换系统 OpenSSH。

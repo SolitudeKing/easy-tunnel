@@ -7,12 +7,14 @@ import subprocess
 import threading
 import webbrowser
 from pathlib import Path
+from uuid import uuid4
 
 import flet as ft
 
 from . import __version__
 from .config_store import ConfigError, ConfigStore
-from .models import RuntimeSnapshot, TunnelConfig, TunnelState
+from .models import LocalForward, RuntimeSnapshot, TunnelConfig, TunnelState
+from .ssh_import import SSHImportError, parse_ssh_command
 from .ssh_manager import SSHManager
 from .updater import (
     UpdateError,
@@ -76,7 +78,12 @@ class EasyTunnelApp:
         self._last_fingerprint: tuple[object, ...] = ()
         self._form: dict[str, ft.Control] = {}
         self._form_dialog: ft.AlertDialog | None = None
+        self._import_dialog: ft.AlertDialog | None = None
+        self._import_command: ft.TextField | None = None
+        self._import_variables: ft.TextField | None = None
+        self._import_error: ft.Text | None = None
         self._editing_id: str | None = None
+        self._form_forward_ids: list[str] = []
         self.file_picker = ft.FilePicker(on_result=self._picked_key)
         self._toggle_lock = threading.Lock()
         self._toggle_targets: dict[str, bool] = {}
@@ -215,7 +222,7 @@ class EasyTunnelApp:
             hint_text="输入关键词并按回车搜索",
             prefix_icon=ft.Icons.SEARCH,
             height=44,
-            width=310,
+            width=270,
             border_color=BORDER,
             focused_border_color=PRIMARY,
             border_radius=12,
@@ -234,6 +241,17 @@ class EasyTunnelApp:
                 ft.Row(
                     [
                         search,
+                        ft.OutlinedButton(
+                            "导入命令",
+                            icon=ft.Icons.CONTENT_PASTE_GO_ROUNDED,
+                            height=44,
+                            style=ft.ButtonStyle(
+                                color=PRIMARY,
+                                side=ft.BorderSide(1, "#C7D2FE"),
+                                shape=ft.RoundedRectangleBorder(radius=11),
+                            ),
+                            on_click=self._open_import_dialog,
+                        ),
                         ft.ElevatedButton(
                             "新建隧道",
                             icon=ft.Icons.ADD_ROUNDED,
@@ -249,6 +267,8 @@ class EasyTunnelApp:
             ],
             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            wrap=True,
+            run_spacing=12,
         )
 
         stats = ft.Row(
@@ -267,7 +287,10 @@ class EasyTunnelApp:
             if not query
             or query in item.config.name.lower()
             or query in item.config.ssh_host.lower()
-            or query in item.config.remote_host.lower()
+            or any(
+                query in forward.name.lower() or query in forward.remote_host.lower()
+                for forward in item.config.forwards
+            )
         ]
         if filtered:
             cards: ft.Control = ft.Column([self._tunnel_card(item) for item in filtered], spacing=12)
@@ -328,16 +351,19 @@ class EasyTunnelApp:
 
     def _tunnel_card(self, snapshot: RuntimeSnapshot) -> ft.Container:
         config = snapshot.config
+        primary_forward = config.forwards[0]
         status_text, status_color, status_bg, status_icon = self._status_style(snapshot.state)
         busy = snapshot.state in {TunnelState.CONNECTING, TunnelState.STOPPING}
         service_icon = {
             "rdp": ft.Icons.DESKTOP_WINDOWS_OUTLINED,
             "web": ft.Icons.LANGUAGE_ROUNDED,
             "tcp": ft.Icons.CABLE_ROUNDED,
-        }.get(config.service_type, ft.Icons.CABLE_ROUNDED)
+        }.get(primary_forward.service_type, ft.Icons.CABLE_ROUNDED)
         service_label = {"rdp": "远程桌面", "web": "Web 服务", "tcp": "TCP 服务"}.get(
-            config.service_type, "TCP 服务"
+            primary_forward.service_type, "TCP 服务"
         )
+        if len(config.forwards) > 1:
+            service_label = f"{len(config.forwards)} 条本地转发"
         subtitle = config.note or f"{config.username}@{config.ssh_host}"
         uptime = (
             f"开始于 {snapshot.started_at:%H:%M}"
@@ -355,16 +381,16 @@ class EasyTunnelApp:
                 tight=True,
             ),
         )
-        connection_line = ft.Row(
+        connection_lines = ft.Column(
             [
-                self._endpoint("本地入口", f"{config.bind_host}:{config.local_port}"),
-                ft.Icon(ft.Icons.ARROW_FORWARD_ROUNDED, color="#98A2B3", size=18),
-                self._endpoint("内网目标", f"{config.remote_host}:{config.remote_port}"),
-                ft.Container(width=1, height=35, bgcolor=BORDER, margin=ft.margin.symmetric(horizontal=5)),
-                self._endpoint("SSH 跳板", f"{config.username}@{config.ssh_host}:{config.ssh_port}"),
+                self._forward_row(
+                    snapshot,
+                    forward,
+                    show_ssh=index == 0,
+                )
+                for index, forward in enumerate(config.forwards)
             ],
-            spacing=13,
-            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            spacing=10,
         )
         error_line: ft.Control = ft.Container()
         if snapshot.last_error:
@@ -387,18 +413,6 @@ class EasyTunnelApp:
             disabled=busy,
             active_color=GREEN,
             on_change=lambda event, tunnel_id=config.id: self._toggle(tunnel_id, bool(event.control.value)),
-        )
-        open_button = ft.OutlinedButton(
-            "打开服务",
-            icon=ft.Icons.OPEN_IN_NEW_ROUNDED,
-            height=37,
-            disabled=snapshot.state != TunnelState.CONNECTED,
-            style=ft.ButtonStyle(
-                color=PRIMARY,
-                side=ft.BorderSide(1, "#C7D2FE"),
-                shape=ft.RoundedRectangleBorder(radius=9),
-            ),
-            on_click=lambda _, item=snapshot: self._open_service(item),
         )
         menu = ft.PopupMenuButton(
             icon=ft.Icons.MORE_HORIZ,
@@ -465,7 +479,6 @@ class EasyTunnelApp:
                                 spacing=4,
                                 expand=True,
                             ),
-                            open_button,
                             switch,
                             menu,
                         ],
@@ -473,12 +486,68 @@ class EasyTunnelApp:
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
                     ft.Container(height=1, bgcolor=BORDER, margin=ft.margin.symmetric(vertical=13)),
-                    connection_line,
+                    connection_lines,
                     error_line,
                 ],
                 spacing=0,
             ),
         )
+
+    def _forward_row(
+        self,
+        snapshot: RuntimeSnapshot,
+        forward: LocalForward,
+        *,
+        show_ssh: bool,
+    ) -> ft.Row:
+        action_label = "复制地址" if forward.service_type == "tcp" else "打开服务"
+        controls: list[ft.Control] = [
+            self._endpoint(forward.name, self._forward_endpoint(forward)),
+            ft.Icon(ft.Icons.ARROW_FORWARD_ROUNDED, color="#98A2B3", size=18),
+            self._endpoint("内网目标", f"{forward.remote_host}:{forward.remote_port}"),
+        ]
+        if show_ssh:
+            config = snapshot.config
+            controls.extend(
+                [
+                    ft.Container(
+                        width=1,
+                        height=35,
+                        bgcolor=BORDER,
+                        margin=ft.margin.symmetric(horizontal=5),
+                    ),
+                    self._endpoint(
+                        "SSH 跳板",
+                        f"{config.username}@{config.ssh_host}:{config.ssh_port}",
+                    ),
+                ]
+            )
+        controls.append(
+            ft.OutlinedButton(
+                action_label,
+                icon=ft.Icons.CONTENT_COPY_OUTLINED
+                if forward.service_type == "tcp"
+                else ft.Icons.OPEN_IN_NEW_ROUNDED,
+                height=34,
+                disabled=snapshot.state != TunnelState.CONNECTED,
+                style=ft.ButtonStyle(
+                    color=PRIMARY,
+                    side=ft.BorderSide(1, "#C7D2FE"),
+                    shape=ft.RoundedRectangleBorder(radius=9),
+                ),
+                on_click=lambda _, item=snapshot, rule=forward: self._open_service(item, rule),
+            )
+        )
+        return ft.Row(
+            controls,
+            spacing=13,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+
+    @staticmethod
+    def _forward_endpoint(forward: LocalForward) -> str:
+        host = forward.bind_host.strip("[]")
+        return f"[{host}]:{forward.local_port}" if ":" in host else f"{host}:{forward.local_port}"
 
     @staticmethod
     def _endpoint(label: str, value: str) -> ft.Column:
@@ -658,8 +727,11 @@ class EasyTunnelApp:
                                 border_radius=10,
                                 bgcolor="#F8FAFC",
                                 content=ft.Text(
-                                    "ssh -i .\\pi-server -L 13389:192.168.3.88:3389 "
-                                    "pi@pi.solitude.love -N",
+                                    "ssh -i .\\pi-server -o IdentitiesOnly=yes "
+                                    "-o ExitOnForwardFailure=yes -o ServerAliveInterval=30 "
+                                    "-o ServerAliveCountMax=3 "
+                                    "-L 127.0.0.1:13389:192.168.3.88:3389 "
+                                    "-N -T pi@pi.solitude.love",
                                     font_family="Consolas",
                                     size=12,
                                     color=TEXT,
@@ -708,21 +780,197 @@ class EasyTunnelApp:
             ]
         )
 
-    def _open_form(self, config: TunnelConfig | None = None) -> None:
-        self._editing_id = config.id if config else None
+    def _open_import_dialog(self, _: object) -> None:
+        self._import_command = ft.TextField(
+            label="SSH 命令",
+            hint_text=(
+                "ssh -i $PrivateKey -L 127.0.0.1:${LocalPort}:127.0.0.1:3306 "
+                "user@gateway -N -T"
+            ),
+            multiline=True,
+            min_lines=7,
+            max_lines=12,
+            border_color=BORDER,
+            focused_border_color=PRIMARY,
+            border_radius=10,
+            text_size=12,
+            text_style=ft.TextStyle(font_family="Consolas"),
+        )
+        self._import_variables = ft.TextField(
+            label="变量定义（可选，每行 NAME=value）",
+            hint_text="PrivateKey=E:\\keys\\pi-server\nLocalPort=13306",
+            multiline=True,
+            min_lines=3,
+            max_lines=6,
+            border_color=BORDER,
+            focused_border_color=PRIMARY,
+            border_radius=10,
+            text_size=12,
+            text_style=ft.TextStyle(font_family="Consolas"),
+        )
+        self._import_error = ft.Text("", color=RED, size=11)
+        self._import_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("安全导入 SSH 命令", color=TEXT, weight=ft.FontWeight.BOLD),
+            content=ft.Container(
+                width=720,
+                height=420,
+                content=ft.Column(
+                    [
+                        ft.Text(
+                            "只解析 -i、-p、-L、-N、-T 和允许的安全选项；不会执行粘贴内容。",
+                            color=MUTED,
+                            size=11,
+                        ),
+                        self._import_command,
+                        self._import_variables,
+                        ft.Text(
+                            "也可把 NAME=value 行放在 SSH 命令前。普通 PowerShell 局部变量不会自动继承；"
+                            f"相对私钥路径按 {Path.cwd()} 解析。",
+                            color=MUTED,
+                            size=11,
+                        ),
+                        self._import_error,
+                    ],
+                    spacing=11,
+                    scroll=ft.ScrollMode.AUTO,
+                ),
+            ),
+            actions=[
+                ft.TextButton(
+                    "取消",
+                    on_click=lambda _: self.page.close(self._import_dialog),
+                ),
+                ft.ElevatedButton(
+                    "解析到表单",
+                    icon=ft.Icons.INPUT_ROUNDED,
+                    bgcolor=PRIMARY,
+                    color="white",
+                    on_click=self._apply_import,
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self.page.open(self._import_dialog)
+
+    def _apply_import(self, _: object) -> None:
+        command_text = str(self._import_command.value or "") if self._import_command else ""
+        variable_text = str(self._import_variables.value or "") if self._import_variables else ""
+        command, inline_definitions = self._split_import_content(command_text)
+        definitions = [
+            line.strip()
+            for line in (*inline_definitions, *variable_text.splitlines())
+            if line.strip()
+        ]
+        try:
+            imported = parse_ssh_command(command, definitions)
+            identity_file = self._absolute_identity_path(imported.identity_file)
+        except (SSHImportError, ValueError) as exc:
+            self._set_import_error(str(exc))
+            return
+
+        forwards: list[LocalForward] = []
+        for index, item in enumerate(imported.forwards, start=1):
+            name, service_type = self._suggest_forward(item.remote_port, index)
+            forwards.append(
+                LocalForward(
+                    name=name,
+                    service_type=service_type,
+                    bind_host=item.bind_host,
+                    local_port=item.local_port,
+                    remote_host=item.remote_host,
+                    remote_port=item.remote_port,
+                )
+            )
+        strict_host_key = imported.option_value("StrictHostKeyChecking") == "yes"
+        config = TunnelConfig(
+            name=f"{imported.username}@{imported.ssh_host}",
+            note=f"从 SSH 命令导入，共 {len(forwards)} 条转发",
+            ssh_host=imported.ssh_host,
+            username=imported.username,
+            ssh_port=imported.ssh_port,
+            identity_file=identity_file,
+            forwards=tuple(forwards),
+            strict_host_key=strict_host_key,
+            connect_timeout=int(imported.option_value("ConnectTimeout") or 10),
+            keepalive_interval=int(imported.option_value("ServerAliveInterval") or 30),
+        )
+        if self._import_dialog:
+            self.page.close(self._import_dialog)
+        self._open_form(config, as_new=True)
+
+    def _set_import_error(self, message: str) -> None:
+        if self._import_error:
+            self._import_error.value = message
+            self._import_error.update() if self._import_error.page else None
+
+    @staticmethod
+    def _split_import_content(text: str) -> tuple[str, tuple[str, ...]]:
+        definitions: list[str] = []
+        command_lines: list[str] = []
+        command_started = False
+        for line in text.splitlines():
+            stripped = line.strip()
+            name, separator, _ = stripped.partition("=")
+            is_variable = bool(
+                separator
+                and name
+                and (name[0].isalpha() or name[0] == "_")
+                and all(char.isalnum() or char == "_" for char in name)
+            )
+            if not command_started and (not stripped or is_variable):
+                if is_variable:
+                    definitions.append(stripped)
+                continue
+            command_started = True
+            command_lines.append(line)
+        return "\n".join(command_lines).strip(), tuple(definitions)
+
+    @staticmethod
+    def _suggest_forward(remote_port: int, index: int) -> tuple[str, str]:
+        suggestions = {
+            3389: ("远程桌面", "rdp"),
+            3306: ("MySQL", "tcp"),
+            3369: ("MySQL", "tcp"),
+            6379: ("Redis", "tcp"),
+            6380: ("Redis", "tcp"),
+            80: ("Web 服务", "web"),
+            443: ("Web 服务", "web"),
+            9000: ("MinIO API", "web"),
+            9001: ("MinIO 控制台", "web"),
+        }
+        return suggestions.get(remote_port, (f"转发 {index}", "tcp"))
+
+    @staticmethod
+    def _absolute_identity_path(value: str) -> str:
+        normalized = value.replace("/", "\\")
+        if os.name == "nt" and normalized.startswith("\\\\"):
+            raise ValueError("私钥文件不允许使用网络共享或 Windows 设备路径")
+        path = Path(value).expanduser()
+        return str(path if path.is_absolute() else path.absolute())
+
+    def _open_form(self, config: TunnelConfig | None = None, *, as_new: bool = False) -> None:
+        self._editing_id = config.id if config and not as_new else None
         source = config or TunnelConfig(
             name="",
             note="",
-            service_type="rdp",
             ssh_host="",
             username="",
             ssh_port=22,
             identity_file="",
-            bind_host="127.0.0.1",
-            local_port=13389,
-            remote_host="",
-            remote_port=3389,
+            forwards=(
+                LocalForward(
+                    name="主服务",
+                    service_type="rdp",
+                    bind_host="127.0.0.1",
+                    local_port=13389,
+                    remote_host="",
+                    remote_port=3389,
+                ),
+            ),
         )
+        primary_forward = source.forwards[0]
+        self._form_forward_ids = [forward.id for forward in source.forwards]
 
         def field(label: str, value: object, **kwargs: object) -> ft.TextField:
             return ft.TextField(
@@ -742,7 +990,7 @@ class EasyTunnelApp:
             "note": field("用途说明", source.note),
             "service_type": ft.Dropdown(
                 label="服务类型",
-                value=source.service_type,
+                value=primary_forward.service_type,
                 options=[
                     ft.dropdown.Option("rdp", "远程桌面 (RDP)"),
                     ft.dropdown.Option("web", "Web 服务"),
@@ -757,10 +1005,51 @@ class EasyTunnelApp:
             "username": field("用户名 *", source.username, hint_text="pi"),
             "ssh_port": field("SSH 端口", source.ssh_port, width=135, keyboard_type=ft.KeyboardType.NUMBER),
             "identity_file": field("私钥文件 *", source.identity_file, hint_text=r"E:\keys\id_ed25519"),
-            "bind_host": field("本地绑定", source.bind_host, width=170),
-            "local_port": field("本地端口 *", source.local_port, width=160, keyboard_type=ft.KeyboardType.NUMBER),
-            "remote_host": field("内网目标主机 *", source.remote_host, hint_text="192.168.3.88"),
-            "remote_port": field("目标端口 *", source.remote_port, width=160, keyboard_type=ft.KeyboardType.NUMBER),
+            "forward_name": field("主服务名称 *", primary_forward.name),
+            "bind_host": field("本地绑定", primary_forward.bind_host, width=170),
+            "local_port": field(
+                "本地端口 *",
+                primary_forward.local_port,
+                width=160,
+                keyboard_type=ft.KeyboardType.NUMBER,
+            ),
+            "remote_host": field(
+                "内网目标主机 *",
+                primary_forward.remote_host,
+                hint_text="192.168.3.88",
+            ),
+            "remote_port": field(
+                "目标端口 *",
+                primary_forward.remote_port,
+                width=160,
+                keyboard_type=ft.KeyboardType.NUMBER,
+            ),
+            "additional_forwards": field(
+                "附加转发（名称 | 类型 | 本地地址:本地端口:目标地址:目标端口）",
+                "\n".join(
+                    f"{forward.name} | {forward.service_type} | {forward.to_ssh_spec()}"
+                    for forward in source.forwards[1:]
+                ),
+                hint_text=(
+                    "Redis | tcp | 127.0.0.1:16380:127.0.0.1:6380\n"
+                    "MinIO | web | 127.0.0.1:19001:127.0.0.1:9001"
+                ),
+                multiline=True,
+                min_lines=2,
+                max_lines=4,
+            ),
+            "connect_timeout": field(
+                "连接超时（秒）",
+                source.connect_timeout,
+                width=170,
+                keyboard_type=ft.KeyboardType.NUMBER,
+            ),
+            "keepalive_interval": field(
+                "保活间隔（秒）",
+                source.keepalive_interval,
+                width=170,
+                keyboard_type=ft.KeyboardType.NUMBER,
+            ),
             "strict_host_key": ft.Checkbox(label="严格校验主机密钥（主机必须已在 known_hosts 中）", value=source.strict_host_key),
             "auto_connect": ft.Checkbox(label="应用启动后自动连接", value=source.auto_connect),
         }
@@ -770,6 +1059,7 @@ class EasyTunnelApp:
         self._form["service_type"].expand = 1
         self._form["ssh_host"].expand = 2
         self._form["username"].expand = 1
+        self._form["forward_name"].expand = True
         self._form["remote_host"].expand = True
         key_row = ft.Row(
             [
@@ -780,12 +1070,12 @@ class EasyTunnelApp:
         )
         self._form["identity_file"].expand = True
         content = ft.Container(
-            width=650,
-            height=475,
+            width=700,
+            height=480,
             content=ft.Column(
                 [
                     self._section_label("基本信息"),
-                    ft.Row([self._form["name"], self._form["service_type"]], spacing=10),
+                    self._form["name"],
                     self._form["note"],
                     self._section_label("SSH 连接"),
                     ft.Row(
@@ -794,8 +1084,20 @@ class EasyTunnelApp:
                     ),
                     key_row,
                     self._section_label("本地端口转发"),
+                    ft.Row([self._form["forward_name"], self._form["service_type"]], spacing=10),
                     ft.Row([self._form["bind_host"], self._form["local_port"]], spacing=10),
                     ft.Row([self._form["remote_host"], self._form["remote_port"]], spacing=10),
+                    self._form["additional_forwards"],
+                    self._section_label("连接保护"),
+                    ft.Row(
+                        [self._form["connect_timeout"], self._form["keepalive_interval"]],
+                        spacing=10,
+                    ),
+                    ft.Text(
+                        "固定启用 IdentitiesOnly、ExitOnForwardFailure、ServerAliveCountMax=3、-N 和 -T。",
+                        color=MUTED,
+                        size=11,
+                    ),
                     self._form["strict_host_key"],
                     self._form["auto_connect"],
                     self._section_label("命令预览"),
@@ -814,7 +1116,11 @@ class EasyTunnelApp:
         )
         self._form_dialog = ft.AlertDialog(
             modal=True,
-            title=ft.Text("编辑隧道" if config else "新建隧道", color=TEXT, weight=ft.FontWeight.BOLD),
+            title=ft.Text(
+                "编辑隧道" if self._editing_id else "新建隧道",
+                color=TEXT,
+                weight=ft.FontWeight.BOLD,
+            ),
             content=content,
             actions=[
                 ft.TextButton("取消", on_click=lambda _: self._close_dialog()),
@@ -837,25 +1143,73 @@ class EasyTunnelApp:
 
     def _form_config(self) -> TunnelConfig:
         get = lambda key: str(getattr(self._form[key], "value", "") or "").strip()
+
+        def integer(key: str, label: str) -> int:
+            try:
+                return int(get(key))
+            except ValueError as exc:
+                raise ValueError(f"{label}必须填写为整数") from exc
+
         identity_file = get("identity_file")
         if identity_file:
-            identity_file = str(Path(identity_file).expanduser().resolve())
+            identity_file = self._absolute_identity_path(identity_file)
+        primary = LocalForward(
+            id=self._form_forward_ids[0] if self._form_forward_ids else uuid4().hex,
+            name=get("forward_name"),
+            service_type=get("service_type"),
+            bind_host=get("bind_host"),
+            local_port=integer("local_port", "本地端口"),
+            remote_host=get("remote_host"),
+            remote_port=integer("remote_port", "目标端口"),
+        )
+        additional = self._parse_additional_forwards(get("additional_forwards"))
         return TunnelConfig(
-            id=self._editing_id or TunnelConfig.__dataclass_fields__["id"].default_factory(),
+            id=self._editing_id or uuid4().hex,
             name=get("name"),
             note=get("note"),
-            service_type=get("service_type"),
             ssh_host=get("ssh_host"),
             username=get("username"),
-            ssh_port=int(get("ssh_port")),
+            ssh_port=integer("ssh_port", "SSH 端口"),
             identity_file=identity_file,
-            bind_host=get("bind_host"),
-            local_port=int(get("local_port")),
-            remote_host=get("remote_host"),
-            remote_port=int(get("remote_port")),
+            forwards=(primary, *additional),
             strict_host_key=bool(getattr(self._form["strict_host_key"], "value", False)),
             auto_connect=bool(getattr(self._form["auto_connect"], "value", False)),
+            connect_timeout=integer("connect_timeout", "连接超时"),
+            keepalive_interval=integer("keepalive_interval", "保活间隔"),
         )
+
+    def _parse_additional_forwards(self, text: str) -> tuple[LocalForward, ...]:
+        forwards: list[LocalForward] = []
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        for index, line in enumerate(lines, start=2):
+            parts = [part.strip() for part in line.split("|")]
+            if len(parts) == 1:
+                name, service_type, spec = f"转发 {index}", "tcp", parts[0]
+            elif len(parts) == 2:
+                name, service_type, spec = parts[0], "tcp", parts[1]
+            elif len(parts) == 3:
+                name, service_type, spec = parts
+            else:
+                raise ValueError(f"第 {index} 条转发格式无效")
+            if service_type not in {"rdp", "web", "tcp"}:
+                raise ValueError(f"第 {index} 条转发的类型必须是 rdp、web 或 tcp")
+            existing_index = index - 1
+            forward_id = (
+                self._form_forward_ids[existing_index]
+                if existing_index < len(self._form_forward_ids)
+                else None
+            )
+            try:
+                forward = LocalForward.from_spec(
+                    spec,
+                    name=name,
+                    service_type=service_type,
+                    forward_id=forward_id,
+                )
+            except ValueError as exc:
+                raise ValueError(f"第 {index} 条转发：{exc}") from exc
+            forwards.append(forward)
+        return tuple(forwards)
 
     def _update_preview(self, _: object) -> None:
         try:
@@ -893,15 +1247,35 @@ class EasyTunnelApp:
         error_control = self._form.get("error")
         try:
             config = self._form_config()
-        except ValueError:
-            self._set_form_error("端口必须填写为整数")
+        except ValueError as exc:
+            self._set_form_error(str(exc) or "端口必须填写为整数")
             return
         errors = config.validate(require_key_exists=True)
-        if not self._is_loopback(config.bind_host):
-            errors.append("为安全起见，本版本只允许绑定本机地址（例如 127.0.0.1 或 ::1）")
+        for forward in config.forwards:
+            if not self._is_loopback(forward.bind_host):
+                errors.append(
+                    f"转发“{forward.name}”只允许绑定本机地址（例如 127.0.0.1 或 ::1）"
+                )
         for existing in self.configs:
-            if existing.id != config.id and existing.bind_host == config.bind_host and existing.local_port == config.local_port:
-                errors.append(f"本地端口与隧道“{existing.name}”重复")
+            if existing.id == config.id:
+                continue
+            existing_endpoints = {
+                self._endpoint_key(forward.bind_host, forward.local_port)
+                for forward in existing.forwards
+            }
+            duplicate = next(
+                (
+                    forward
+                    for forward in config.forwards
+                    if self._endpoint_key(forward.bind_host, forward.local_port)
+                    in existing_endpoints
+                ),
+                None,
+            )
+            if duplicate:
+                errors.append(
+                    f"转发“{duplicate.name}”的本地端口与隧道“{existing.name}”重复"
+                )
                 break
         if errors:
             self._set_form_error(errors[0])
@@ -1013,16 +1387,14 @@ class EasyTunnelApp:
         self._render()
         self._toast("隧道已删除")
 
-    def _open_service(self, snapshot: RuntimeSnapshot) -> None:
-        config = snapshot.config
-        bind_host = config.bind_host.strip("[]")
-        endpoint = f"[{bind_host}]:{config.local_port}" if ":" in bind_host else f"{bind_host}:{config.local_port}"
+    def _open_service(self, snapshot: RuntimeSnapshot, forward: LocalForward) -> None:
+        endpoint = self._forward_endpoint(forward)
         try:
-            if config.service_type == "rdp":
+            if forward.service_type == "rdp":
                 if os.name != "nt":
                     raise RuntimeError("自动打开远程桌面目前仅支持 Windows")
                 subprocess.Popen(["mstsc", f"/v:{endpoint}"], shell=False)
-            elif config.service_type == "web":
+            elif forward.service_type == "web":
                 webbrowser.open(f"http://{endpoint}")
             else:
                 self.page.set_clipboard(endpoint)
@@ -1034,6 +1406,17 @@ class EasyTunnelApp:
         control = getattr(event, "control", None)
         self.search_query = str(getattr(control, "value", ""))
         self._render()
+
+    @staticmethod
+    def _endpoint_key(host: str, port: int) -> tuple[str, int]:
+        value = host.strip().strip("[]").lower()
+        if value == "localhost":
+            value = "127.0.0.1"
+        try:
+            value = ipaddress.ip_address(value).compressed
+        except ValueError:
+            pass
+        return value, port
 
     def _log_filter_changed(self, event: object) -> None:
         value = str(getattr(getattr(event, "control", None), "value", "all"))
