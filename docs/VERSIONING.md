@@ -37,6 +37,8 @@ The `Publish release` workflow validates that the tag equals
 and Windows installer, then creates a GitHub Release with auto-generated notes.
 The installer asset is named `EasyTunnel-Setup-<version>.exe`; the application
 uses GitHub's SHA-256 asset digest to verify it before launching the installer.
+If the unauthenticated GitHub API is rate-limited, discovery falls back to the
+latest release redirect and the published `.sha256` asset.
 `a`, `b`, `rc`, and `.dev` versions are marked as pre-releases. A mismatched
 tag stops before any release is created.
 

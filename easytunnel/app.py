@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import logging
 import os
 import subprocess
 import threading
@@ -26,6 +27,8 @@ from .updater import (
     launch_installer,
 )
 
+
+LOGGER = logging.getLogger(__name__)
 
 BG = "#F4F7FB"
 SURFACE = "#FFFFFF"
@@ -1471,23 +1474,25 @@ class EasyTunnelApp:
             self._update_status = f"检查更新失败：{exc}"
             if manual:
                 self._toast(self._update_status, error=True)
-            if self.current_view == "settings":
-                self._render()
-            return
+        except Exception:
+            LOGGER.exception("Unexpected update check failure")
+            self._update_status = "检查更新失败：发生意外错误，请稍后重试。"
+            if manual:
+                self._toast(self._update_status, error=True)
+        else:
+            if update is None:
+                self._available_update = None
+                self._update_status = "当前已是最新稳定版本。"
+                if manual:
+                    self._toast(self._update_status)
+            else:
+                self._available_update = update
+                self._update_status = f"发现新版本 {update.version}。"
+                self._show_update_dialog(update)
         finally:
             self._checking_update = False
-
-        if update is None:
-            self._available_update = None
-            self._update_status = "当前已是最新稳定版本。"
-            if manual:
-                self._toast(self._update_status)
-        else:
-            self._available_update = update
-            self._update_status = f"发现新版本 {update.version}。"
-            self._show_update_dialog(update)
-        if self.current_view == "settings":
-            self._render()
+            if self.current_view == "settings":
+                self._render()
 
     def _show_update_dialog(self, update: UpdateInfo) -> None:
         notes = update.release_notes.strip() or "此版本暂无发布说明。"

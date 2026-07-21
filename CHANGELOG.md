@@ -5,6 +5,17 @@ Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-07-21
+
+### Fixed
+
+- Detect Flet-packaged Windows builds correctly so automatic and manual update
+  checks run.
+- Fall back to the published release checksum when the unauthenticated GitHub
+  API is rate-limited.
+- Re-enable the manual update button after a failed check and surface local
+  download errors.
+
 ## [0.1.1] - 2026-07-21
 
 ### Added

@@ -1,11 +1,15 @@
+import asyncio
 import os
 from pathlib import Path
 
 import flet as ft
 import pytest
+from packaging.version import Version
 
+import easytunnel.app as app_module
 from easytunnel.app import EasyTunnelApp
 from easytunnel.models import LocalForward
+from easytunnel.updater import UpdateError, UpdateInfo
 
 
 def test_loopback_validation_accepts_ipv4_ipv6_and_localhost() -> None:
@@ -119,3 +123,96 @@ def test_tcp_service_action_uses_selected_forward(
     app._open_service(snapshot, forward)
 
     assert page.clipboard == "[::1]:16380"
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        UpdateError("网络暂时不可用"),
+        RuntimeError("unexpected failure"),
+    ],
+)
+def test_update_check_failure_restores_manual_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: Exception,
+) -> None:
+    monkeypatch.setenv("EASYTUNNEL_CONFIG", str(tmp_path / "tunnels.json"))
+    monkeypatch.setattr(app_module, "is_packaged_windows_app", lambda: True)
+
+    def fail_update_check(_: str) -> None:
+        raise failure
+
+    monkeypatch.setattr(app_module, "fetch_latest_update", fail_update_check)
+    page = _FakePage()
+    app = EasyTunnelApp(page)  # type: ignore[arg-type]
+    app.current_view = "settings"
+    rendered_states: list[bool] = []
+    monkeypatch.setattr(
+        app,
+        "_render",
+        lambda: rendered_states.append(app._checking_update),
+    )
+
+    asyncio.run(app._check_for_update(manual=True))
+
+    assert app._checking_update is False
+    assert rendered_states == [True, False]
+    assert "检查更新失败" in app._update_status
+    assert page.opened
+
+
+def test_update_check_reports_current_version_and_restores_button(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EASYTUNNEL_CONFIG", str(tmp_path / "tunnels.json"))
+    monkeypatch.setattr(app_module, "is_packaged_windows_app", lambda: True)
+    monkeypatch.setattr(app_module, "fetch_latest_update", lambda _: None)
+    page = _FakePage()
+    app = EasyTunnelApp(page)  # type: ignore[arg-type]
+    app.current_view = "settings"
+    rendered_states: list[bool] = []
+    monkeypatch.setattr(
+        app,
+        "_render",
+        lambda: rendered_states.append(app._checking_update),
+    )
+
+    asyncio.run(app._check_for_update())
+
+    assert app._update_status == "当前已是最新稳定版本。"
+    assert rendered_states == [True, False]
+
+
+def test_update_check_opens_new_version_dialog(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EASYTUNNEL_CONFIG", str(tmp_path / "tunnels.json"))
+    monkeypatch.setattr(app_module, "is_packaged_windows_app", lambda: True)
+    update = UpdateInfo(
+        version=Version("0.2.0"),
+        installer_name="EasyTunnel-Setup-0.2.0.exe",
+        installer_url="https://example.test/EasyTunnel-Setup.exe",
+        sha256="a" * 64,
+        installer_size=3,
+        release_url="https://example.test/release",
+        release_notes="更新说明",
+    )
+    monkeypatch.setattr(app_module, "fetch_latest_update", lambda _: update)
+    page = _FakePage()
+    app = EasyTunnelApp(page)  # type: ignore[arg-type]
+    app.current_view = "settings"
+    rendered_states: list[bool] = []
+    monkeypatch.setattr(
+        app,
+        "_render",
+        lambda: rendered_states.append(app._checking_update),
+    )
+
+    asyncio.run(app._check_for_update())
+
+    assert app._update_status == "发现新版本 0.2.0。"
+    assert isinstance(page.opened[-1], ft.AlertDialog)
+    assert rendered_states == [True, False]

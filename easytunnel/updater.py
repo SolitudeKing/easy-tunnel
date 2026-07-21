@@ -5,11 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 import tempfile
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.error import HTTPError, URLError
+from urllib.parse import unquote, urlparse
 from urllib.request import Request, urlopen
 
 from packaging.version import InvalidVersion, Version
@@ -18,8 +21,17 @@ from packaging.version import InvalidVersion, Version
 GITHUB_LATEST_RELEASE_URL = (
     "https://api.github.com/repos/SolitudeKing/easy-tunnel/releases/latest"
 )
+GITHUB_LATEST_RELEASE_PAGE_URL = (
+    "https://github.com/SolitudeKing/easy-tunnel/releases/latest"
+)
+GITHUB_RELEASE_DOWNLOAD_URL_TEMPLATE = (
+    "https://github.com/SolitudeKing/easy-tunnel/releases/download/"
+    "v{version}/{asset_name}"
+)
 INSTALLER_NAME_TEMPLATE = "EasyTunnel-Setup-{version}.exe"
 DOWNLOAD_CHUNK_SIZE = 1024 * 1024
+MAX_CHECKSUM_SIZE = 4096
+MAX_INSTALLER_SIZE = 512 * 1024 * 1024
 
 
 class UpdateError(RuntimeError):
@@ -35,7 +47,7 @@ class UpdateInfo:
         installer_name: Expected Windows installer file name.
         installer_url: Direct HTTPS URL for the installer release asset.
         sha256: Expected SHA-256 digest without the ``sha256:`` prefix.
-        installer_size: Expected size of the installer in bytes.
+        installer_size: Expected size of the installer in bytes, when known.
         release_url: Browser URL for the release notes.
         release_notes: Release notes supplied by GitHub.
     """
@@ -44,17 +56,32 @@ class UpdateInfo:
     installer_name: str
     installer_url: str
     sha256: str
-    installer_size: int
+    installer_size: int | None
     release_url: str
     release_notes: str
 
 
 def is_packaged_windows_app() -> bool:
     """Return whether the application is running as a Flet Windows package."""
-    return os.name == "nt" and bool(os.environ.get("FLET_ASSETS_DIR"))
+    return _is_packaged_windows_runtime(os.name, os.environ)
 
 
-def fetch_latest_update(current_version: str, *, timeout_seconds: float = 8.0) -> UpdateInfo | None:
+def _is_packaged_windows_runtime(
+    os_name: str,
+    environment: Mapping[str, str],
+) -> bool:
+    return (
+        os_name == "nt"
+        and environment.get("FLET_PLATFORM") == "windows"
+        and bool(environment.get("FLET_APP_STORAGE_DATA"))
+    )
+
+
+def fetch_latest_update(
+    current_version: str,
+    *,
+    timeout_seconds: float = 8.0,
+) -> UpdateInfo | None:
     """Fetch a newer stable Windows installer from GitHub Releases.
 
     Args:
@@ -81,6 +108,11 @@ def fetch_latest_update(current_version: str, *, timeout_seconds: float = 8.0) -
     except HTTPError as exc:
         if exc.code == 404:
             return None
+        if exc.code in {403, 429}:
+            return _fetch_latest_update_from_release_page(
+                current_version,
+                timeout_seconds=timeout_seconds,
+            )
         raise UpdateError(f"无法检查更新：GitHub 返回 HTTP {exc.code}") from exc
     except (OSError, TimeoutError, URLError, json.JSONDecodeError) as exc:
         raise UpdateError(f"无法检查更新：{exc}") from exc
@@ -90,7 +122,10 @@ def fetch_latest_update(current_version: str, *, timeout_seconds: float = 8.0) -
     return parse_latest_release(document, current_version)
 
 
-def parse_latest_release(release: dict[str, object], current_version: str) -> UpdateInfo | None:
+def parse_latest_release(
+    release: dict[str, object],
+    current_version: str,
+) -> UpdateInfo | None:
     """Validate a GitHub release document and extract its Windows installer.
 
     Args:
@@ -127,16 +162,14 @@ def parse_latest_release(release: dict[str, object], current_version: str) -> Up
             continue
         installer_url = _required_text(item, "browser_download_url")
         digest = _required_text(item, "digest")
-        checksum = digest.removeprefix("sha256:")
-        if not digest.startswith("sha256:") or len(checksum) != 64:
+        if not digest.startswith("sha256:"):
             raise UpdateError("新版本安装包缺少有效的 SHA-256 校验值")
-        try:
-            bytes.fromhex(checksum)
-        except ValueError as exc:
-            raise UpdateError("新版本安装包缺少有效的 SHA-256 校验值") from exc
+        checksum = _validate_checksum(digest.removeprefix("sha256:"))
         size = item.get("size")
-        if not isinstance(size, int) or size <= 0:
+        if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
             raise UpdateError("新版本安装包大小无效")
+        if size > MAX_INSTALLER_SIZE:
+            raise UpdateError("新版本安装包超过最大允许大小")
         return UpdateInfo(
             version=latest_version,
             installer_name=expected_name,
@@ -148,6 +181,66 @@ def parse_latest_release(release: dict[str, object], current_version: str) -> Up
         )
 
     raise UpdateError(f"新版本未提供 Windows 安装包：{expected_name}")
+
+
+def _fetch_latest_update_from_release_page(
+    current_version: str,
+    *,
+    timeout_seconds: float,
+) -> UpdateInfo | None:
+    """Discover an update without using the rate-limited GitHub API."""
+    headers = {"User-Agent": f"EasyTunnel/{current_version}"}
+    latest_request = Request(
+        GITHUB_LATEST_RELEASE_PAGE_URL,
+        headers=headers,
+        method="HEAD",
+    )
+    try:
+        with urlopen(latest_request, timeout=timeout_seconds) as response:
+            release_url = response.geturl()
+    except HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise UpdateError(f"无法检查更新：GitHub 返回 HTTP {exc.code}") from exc
+    except (OSError, TimeoutError, URLError) as exc:
+        raise UpdateError(f"无法检查更新：{exc}") from exc
+
+    latest_version = _release_version_from_url(release_url)
+    try:
+        installed_version = Version(current_version)
+    except InvalidVersion as exc:
+        raise UpdateError(f"无法检查更新：版本号无效（{exc}）") from exc
+    if latest_version <= installed_version:
+        return None
+
+    installer_name = INSTALLER_NAME_TEMPLATE.format(version=latest_version)
+    installer_url = GITHUB_RELEASE_DOWNLOAD_URL_TEMPLATE.format(
+        version=latest_version,
+        asset_name=installer_name,
+    )
+    checksum_request = Request(
+        f"{installer_url}.sha256",
+        headers=headers,
+    )
+    try:
+        with urlopen(checksum_request, timeout=timeout_seconds) as response:
+            checksum_document = response.read(MAX_CHECKSUM_SIZE + 1)
+    except HTTPError as exc:
+        raise UpdateError(f"新版本缺少 SHA-256 校验文件（HTTP {exc.code}）") from exc
+    except (OSError, TimeoutError, URLError) as exc:
+        raise UpdateError(f"无法获取新版本校验文件：{exc}") from exc
+    if len(checksum_document) > MAX_CHECKSUM_SIZE:
+        raise UpdateError("新版本 SHA-256 校验文件过大")
+
+    return UpdateInfo(
+        version=latest_version,
+        installer_name=installer_name,
+        installer_url=installer_url,
+        sha256=_parse_checksum_document(checksum_document, installer_name),
+        installer_size=None,
+        release_url=release_url,
+        release_notes="",
+    )
 
 
 def download_installer(update: UpdateInfo, destination_dir: Path) -> Path:
@@ -163,37 +256,62 @@ def download_installer(update: UpdateInfo, destination_dir: Path) -> Path:
     Raises:
         UpdateError: If the installer cannot be downloaded or validated.
     """
-    destination_dir.mkdir(parents=True, exist_ok=True)
     destination = destination_dir / update.installer_name
-    descriptor, temporary_name = tempfile.mkstemp(
-        dir=destination_dir,
-        prefix=f".{update.installer_name}.",
-        suffix=".part",
-    )
-    temporary = Path(temporary_name)
+    descriptor: int | None = None
+    temporary: Path | None = None
     digest = hashlib.sha256()
     downloaded_size = 0
+    expected_size = update.installer_size
     try:
+        if expected_size is not None and expected_size > MAX_INSTALLER_SIZE:
+            raise UpdateError("安装包超过最大允许大小，已取消更新")
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(
+            dir=destination_dir,
+            prefix=f".{update.installer_name}.",
+            suffix=".part",
+        )
+        temporary = Path(temporary_name)
         with os.fdopen(descriptor, "wb") as handle:
+            descriptor = None
             request = Request(
                 update.installer_url,
                 headers={"User-Agent": "EasyTunnel updater"},
             )
             with urlopen(request, timeout=30) as response:
+                if expected_size is None:
+                    expected_size = _response_content_length(response)
+                if expected_size is not None and expected_size > MAX_INSTALLER_SIZE:
+                    raise UpdateError("安装包超过最大允许大小，已取消更新")
                 while chunk := response.read(DOWNLOAD_CHUNK_SIZE):
                     downloaded_size += len(chunk)
+                    if downloaded_size > MAX_INSTALLER_SIZE:
+                        raise UpdateError("安装包超过最大允许大小，已取消更新")
+                    if expected_size is not None and downloaded_size > expected_size:
+                        raise UpdateError("安装包大小与发布信息不符，已取消更新")
                     digest.update(chunk)
                     handle.write(chunk)
-        if downloaded_size != update.installer_size:
+        if expected_size is not None and downloaded_size != expected_size:
             raise UpdateError("安装包下载不完整，已取消更新")
         if digest.hexdigest().lower() != update.sha256.lower():
             raise UpdateError("安装包 SHA-256 校验失败，已取消更新")
         os.replace(temporary, destination)
         return destination
+    except UpdateError:
+        raise
     except (OSError, TimeoutError, URLError) as exc:
         raise UpdateError(f"无法下载安装包：{exc}") from exc
     finally:
-        temporary.unlink(missing_ok=True)
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def launch_installer(installer: Path) -> None:
@@ -224,3 +342,50 @@ def _required_text(document: dict[str, object], key: str) -> str:
     if not isinstance(value, str) or not value:
         raise UpdateError(f"GitHub 发布数据缺少有效字段：{key}")
     return value
+
+
+def _release_version_from_url(release_url: str) -> Version:
+    parsed = urlparse(release_url)
+    path_prefix = "/SolitudeKing/easy-tunnel/releases/tag/"
+    path = unquote(parsed.path)
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "github.com"
+        or not path.startswith(path_prefix)
+    ):
+        raise UpdateError("无法检查更新：GitHub 最新版本地址无效")
+    tag_name = path.removeprefix(path_prefix)
+    if not tag_name.startswith("v") or "/" in tag_name:
+        raise UpdateError("无法检查更新：发布标签必须以 v 开头")
+    try:
+        return Version(tag_name[1:])
+    except InvalidVersion as exc:
+        raise UpdateError(f"无法检查更新：版本号无效（{exc}）") from exc
+
+
+def _parse_checksum_document(document: bytes, installer_name: str) -> str:
+    try:
+        fields = document.decode("ascii").strip().split()
+    except UnicodeDecodeError as exc:
+        raise UpdateError("新版本 SHA-256 校验文件格式无效") from exc
+    if len(fields) != 2 or fields[1].removeprefix("*") != installer_name:
+        raise UpdateError("新版本 SHA-256 校验文件与安装包不匹配")
+    return _validate_checksum(fields[0])
+
+
+def _validate_checksum(checksum: str) -> str:
+    if re.fullmatch(r"[0-9a-fA-F]{64}", checksum) is None:
+        raise UpdateError("新版本安装包缺少有效的 SHA-256 校验值")
+    return checksum.lower()
+
+
+def _response_content_length(response: object) -> int | None:
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return None
+    value = headers.get("Content-Length")
+    try:
+        size = int(value)
+    except (TypeError, ValueError):
+        return None
+    return size if size > 0 else None
