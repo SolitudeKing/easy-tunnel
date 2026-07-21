@@ -4,25 +4,38 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing tag to build and publish (for example, v0.1.1)"
+        required: true
+        type: string
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ inputs.release_tag || github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
     name: Build and publish
-    runs-on: windows-latest
+    runs-on: windows-2022
 
     env:
       FLET_CLI_NO_RICH_OUTPUT: "1"
       PYTHONUTF8: "1"
+      RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -35,8 +48,6 @@ jobs:
         run: uv sync --locked
 
       - name: Verify the release tag matches the package version
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           $version = uv run python -c "from easytunnel import __version__; print(__version__)"
           $expected = "v$version"
@@ -51,16 +62,54 @@ jobs:
         run: choco install innosetup --no-progress --yes
 
       - name: Build release artifacts
-        run: powershell -ExecutionPolicy Bypass -File scripts/package_windows.ps1 -OutputDir release -SkipTests
+        run: |
+          New-Item -ItemType Directory -Force -Path diagnostics | Out-Null
+          Start-Transcript -Path diagnostics/package-windows.log
+          try {
+            & powershell -ExecutionPolicy Bypass -File scripts/package_windows.ps1 -OutputDir release -SkipTests
+            if ($LASTEXITCODE -ne 0) {
+              throw "Packaging failed with exit code $LASTEXITCODE."
+            }
+          }
+          finally {
+            Stop-Transcript
+          }
+
+      - name: Upload packaging diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: packaging-diagnostics-${{ env.RELEASE_TAG }}
+          path: |
+            diagnostics/package-windows.log
+            release/python
+            release/installer
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $releaseFlags = @()
-          if ($env:GITHUB_REF_NAME -match "(a|b|rc|\.dev)\d+$") {
+          if ($env:RELEASE_TAG -match "(a|b|rc|\.dev)\d+$") {
             $releaseFlags += "--prerelease"
           }
-          $assets = Get-ChildItem -Path "release/python", "release/installer" -File |
-            ForEach-Object { $_.FullName }
-          gh release create $env:GITHUB_REF_NAME $assets --generate-notes --title "EasyTunnel $env:GITHUB_REF_NAME" @releaseFlags
+          $assets = @(
+            Get-ChildItem -Path "release/python", "release/installer" -File |
+              ForEach-Object { $_.FullName }
+          )
+          if ($assets.Count -eq 0) {
+            throw "No release assets were found."
+          }
+
+          gh release view $env:RELEASE_TAG *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:RELEASE_TAG @assets --clobber
+          }
+          else {
+            gh release create $env:RELEASE_TAG @assets --verify-tag --generate-notes --title "EasyTunnel $env:RELEASE_TAG" @releaseFlags
+          }
+          if ($LASTEXITCODE -ne 0) {
+            throw "Publishing GitHub Release '$env:RELEASE_TAG' failed with exit code $LASTEXITCODE."
+          }
