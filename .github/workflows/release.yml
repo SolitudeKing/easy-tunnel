@@ -95,13 +95,18 @@ jobs:
           if ($env:RELEASE_TAG -match "(a|b|rc|\.dev)\d+$") {
             $releaseFlags += "--prerelease"
           }
-          $assets = @(
-            Get-ChildItem -Path "release/python", "release/installer" -File |
-              ForEach-Object { $_.FullName }
+          $version = $env:RELEASE_TAG.Substring(1)
+          $expectedAssets = @(
+            "release/python/easy_tunnel-$version-py3-none-any.whl",
+            "release/python/easy_tunnel-$version.tar.gz",
+            "release/installer/EasyTunnel-Setup-$version.exe",
+            "release/installer/EasyTunnel-Setup-$version.exe.sha256"
           )
-          if ($assets.Count -eq 0) {
-            throw "No release assets were found."
+          $missingAssets = @($expectedAssets | Where-Object { -not (Test-Path -LiteralPath $_ -PathType Leaf) })
+          if ($missingAssets.Count -gt 0) {
+            throw "Missing release assets: $($missingAssets -join ', ')"
           }
+          $assets = @($expectedAssets | ForEach-Object { (Resolve-Path -LiteralPath $_).Path })
 
           gh release view $env:RELEASE_TAG *> $null
           if ($LASTEXITCODE -eq 0) {
